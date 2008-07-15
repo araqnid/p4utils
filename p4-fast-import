@@ -196,7 +196,8 @@ for my $p4change (@p4changes) {
 		$filterstatus == 0 or die "data filter exited: ".PerforceLink::decode_exitstatus($filterstatus)."\n";
 	    }
 	    my $file_size = -s $tmpfilename;
-	    $slavepipe->print("M 100644 inline $git_path\n");
+	    my $mode = ($typemods =~ /x/) ? "100755" : "100644";
+	    $slavepipe->print("M $mode inline $git_path\n");
 	    $slavepipe->print("data $file_size\n");
 	    open(DATA, $tmpfilename) or die "Unable to read temporary file: $!\n";
 	    my $remain = $file_size;
