@@ -63,16 +63,15 @@ elsif ($git_repo_dir) {
 
 $p4base =~ s{/(\.\.\.)?$}{};
 
-sub fetch_p4user($) {
-    my $userid = shift;
-    my $userinfo = p4_recv("user", "-o", $userid);
-    return { id => $userinfo->{User}, email => $userinfo->{Email}, name => $userinfo->{FullName} };
-}
-
 sub get_p4user($) {
     my $userid = shift;
-    our %users;
-    return $users{$userid} ||= fetch_p4user($userid);
+    our %usertab;
+    if (!%usertab) {
+	for (p4_recv("users")) {
+	    $usertab{$_->{User}} = $_;
+	}
+    }
+    return $usertab{$userid} || { User => $userid, Email => "$userid\@defunct.example.com", FullName => "$userid" };
 }
 
 sub decode_p4_filetype($) {
@@ -124,13 +123,13 @@ my $max_changes = $opt_m || 0;
 my $prevchange;
 my $chgcounter;
 for my $p4change (@p4changes) {
-    $slavepipe->print("progress $p4change->{id} - $p4change->{user}->{id} - $p4change->{subject}\n");
+    $slavepipe->print("progress $p4change->{id} - $p4change->{user}->{User} - $p4change->{subject}\n");
     my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
     my $commit_text = $p4change->{desc};
 
     $slavepipe->print("commit refs/remotes/p4/$p4_remote_branch\n");
     $slavepipe->print("mark :$p4change->{id}\n");
-    $slavepipe->print("committer $p4change->{user}->{name} <$p4change->{user}->{email}> $p4change->{time} +0000\n");
+    $slavepipe->print("committer $p4change->{user}->{FullName} <$p4change->{user}->{Email}> $p4change->{time} +0000\n");
     $slavepipe->print("data ".length($commit_text)."\n");
     $slavepipe->print("$commit_text\n");
     $slavepipe->print("from :$prevchange->{id}\n") if ($prevchange);
