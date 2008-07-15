@@ -6,6 +6,8 @@ use warnings;
 use utf8;
 use Getopt::Std;
 use IO::Pipe;
+use IO::File;
+use IO::Wrap;
 use Git;
 use Data::Dumper;
 use Fcntl;
@@ -28,29 +30,35 @@ use constant FILETYPE_ALIASES => {
     "xunicode" => ["unicode", "x"],
     "xutf16" => ["utf16", "x"],
 };
-use vars qw($opt_b $opt_m $opt_n $opt_C $opt_B $opt_T);
+use vars qw($opt_b $opt_m $opt_n $opt_C $opt_B $opt_T $opt_o);
 
-getopts("b:m:nB:C:T:") && @ARGV == 2 or die "Syntax: $0 [-b remote-branch-name] [-m max-changes] [-n] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root git-repo\n";
+getopts("b:m:nB:C:T:o:") && @ARGV >= 1 && @ARGV <= 2 or die "Syntax: $0 [-b remote-branch-name] [-o fast-import-dump] [-m max-changes] [-n] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root [git-repo]\n";
 
 my($p4base, $git_repo_dir) = @ARGV;
 my $p4_remote_branch = $opt_b || 'main';
 
-if (! -d $git_repo_dir) {
-    mkdir $git_repo_dir, 0775 or die "Unable to create $git_repo_dir: $!\n";
-    my $initpid = fork;
-    die "Cannot fork: $!\n" unless (defined($initpid));
-    if ($initpid == 0) {
-	chdir $git_repo_dir or die "Unable to chdir to $git_repo_dir: $!\n";
-	if ($opt_n) {
-	    exec("git", "init", "--bare") or die "Unable to exec git: $!\n";
+if (!$opt_o) {
+    die "GIT repo directory must be given if -o is not given\n" unless ($git_repo_dir);
+    if (! -d $git_repo_dir) {
+	mkdir $git_repo_dir, 0775 or die "Unable to create $git_repo_dir: $!\n";
+	my $initpid = fork;
+	die "Cannot fork: $!\n" unless (defined($initpid));
+	if ($initpid == 0) {
+	    chdir $git_repo_dir or die "Unable to chdir to $git_repo_dir: $!\n";
+	    if ($opt_n) {
+		exec("git", "init", "--bare") or die "Unable to exec git: $!\n";
+	    }
+	    else {
+		exec("git", "init") or die "Unable to exec git: $!\n";
+	    }
 	}
-	else {
-	    exec("git", "init") or die "Unable to exec git: $!\n";
-	}
+	waitpid($initpid, 0) or die "Unable to wait for init: $!\n";
+	my $initstatus = $?;
+	$initstatus == 0 or die "git init exited: ".PerforceLink::decode_exitstatus($initstatus)."\n";
     }
-    waitpid($initpid, 0) or die "Unable to wait for init: $!\n";
-    my $initstatus = $?;
-    $initstatus == 0 or die "git init exited: ".PerforceLink::decode_exitstatus($initstatus)."\n";
+}
+elsif ($git_repo_dir) {
+    die "GIT repo directory must not be given if -o is given\n";
 }
 
 $p4base =~ s{/(\.\.\.)?$}{};
@@ -83,16 +91,28 @@ for my $p4change (p4_recv("changes", "-l", "-t", "$p4base/...")) {
     unshift @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
 }
 
-my $slavepipe = IO::Pipe->new;
-my $slavepid = fork;
-die "Cannot fork: $!\n" unless (defined $slavepid);
-if ($slavepid == 0) {
-    $slavepipe->reader;
-    open(STDIN, "<&=".$slavepipe->fileno) or die "Unable to redirect stdin: $!\n";
-    $ENV{GIT_DIR} = -d "$git_repo_dir/.git" ? "$git_repo_dir/.git" : $git_repo_dir;
-    exec "git", "fast-import" or die "Can't exec git fast-import: $!\n";
+my $slavepipe;
+my $slavepid;
+if ($opt_o) {
+    if ($opt_o eq '-') {
+	$slavepipe = wraphandle(\*STDOUT);
+    }
+    else {
+	$slavepipe = IO::File->new(">$opt_o");
+    }
 }
-$slavepipe->writer;
+else {
+    $slavepipe = IO::Pipe->new;
+    $slavepid = fork;
+    die "Cannot fork: $!\n" unless (defined $slavepid);
+    if ($slavepid == 0) {
+	$slavepipe->reader;
+	open(STDIN, "<&=".$slavepipe->fileno) or die "Unable to redirect stdin: $!\n";
+	$ENV{GIT_DIR} = -d "$git_repo_dir/.git" ? "$git_repo_dir/.git" : $git_repo_dir;
+	exec "git", "fast-import" or die "Can't exec git fast-import: $!\n";
+    }
+    $slavepipe->writer;
+}
 
 my $current_p4user = get_p4user($ENV{P4USER} || [getpwuid($<)]->[0]);
 my $last_checkpoint = [time, 0, 0];
@@ -217,10 +237,12 @@ for my $p4change (@p4changes) {
 
 $slavepipe->print("progress All done; $chgcounter changes, $data_sent bytes");
 
-$slavepipe->close;
-waitpid($slavepid, 0) or die "Unable to wait for git slave: $!\n";
-my $slavestatus = $?;
-$slavestatus == 0 or die "git slave exited: ".PerforceLink::decode_exitstatus($slavestatus)."\n";
+if ($slavepid) {
+    $slavepipe->close;
+    waitpid($slavepid, 0) or die "Unable to wait for git slave: $!\n";
+    my $slavestatus = $?;
+    $slavestatus == 0 or die "git slave exited: ".PerforceLink::decode_exitstatus($slavestatus)."\n";
+}
 
 my $repo = Git->repository(Directory => $git_repo_dir);
 
