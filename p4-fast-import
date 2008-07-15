@@ -238,8 +238,8 @@ my $repo = Git->repository(Directory => $git_repo_dir);
 # Set refs/heads/master to the new branch if it does not already exist, check out the tree if repo is not bare
 if ($repo->command_oneline("show-ref") !~ m{ refs/heads/master$}) {
     $repo->command_noisy("update-ref", "refs/heads/master", "refs/remotes/p4/$p4_remote_branch");
+    # This assumes HEAD is master... which is the case if the repo is new
     if ($repo->command_oneline("config", "core.bare") eq 'false') {
-	$repo->command_noisy("read-tree", "refs/heads/master");
-	$repo->command_noisy("checkout-index", "-a", "-u");
+	$repo->command_noisy("checkout", "-f");
     }
 }
