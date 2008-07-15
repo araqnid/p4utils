@@ -1,0 +1,232 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use Getopt::Std;
+use IO::Pipe;
+use Git;
+use Data::Dumper;
+use Fcntl;
+use PerforceLink qw(:p4);
+# p4 help filetypes
+use constant FILETYPE_ALIASES => {
+    "ctext" => ["text", "C"],
+    "cxtext" => ["text", "Cx"],
+    "ktext" => ["text", "k"],
+    "kxtext" => ["text", "kx"],
+    "ltext" => ["text", "F"],
+    "tempobj" => ["binary", "Sw"],
+    "ubinary" => ["binary", "F"],
+    "uresource" => ["resource", "F"],
+    "uxbinary" => ["binary", "Fx"],
+    "xbinary" => ["binary", "x"],
+    "xltext" => ["text", "Fx"],
+    "xtempobj" => ["binary", "Swx"],
+    "xtext" => ["text", "x"],
+    "xunicode" => ["unicode", "x"],
+    "xutf16" => ["utf16", "x"],
+};
+use vars qw($opt_b $opt_m $opt_n $opt_C $opt_B $opt_T);
+
+getopts("b:m:n") && @ARGV == 2 or die "Syntax: $0 [-b remote-branch-name] [-m max-changes] [-n] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root git-repo\n";
+
+my($p4base, $git_repo_dir) = @ARGV;
+my $p4_remote_branch = $opt_b || 'main';
+
+if (! -d $git_repo_dir) {
+    mkdir $git_repo_dir, 0775 or die "Unable to create $git_repo_dir: $!\n";
+    my $initpid = fork;
+    die "Cannot fork: $!\n" unless (defined($initpid));
+    if ($initpid == 0) {
+	chdir $git_repo_dir or die "Unable to chdir to $git_repo_dir: $!\n";
+	if ($opt_n) {
+	    exec("git", "init", "--bare") or die "Unable to exec git: $!\n";
+	}
+	else {
+	    exec("git", "init") or die "Unable to exec git: $!\n";
+	}
+    }
+    waitpid($initpid, 0) or die "Unable to wait for init: $!\n";
+    my $initstatus = $?;
+    $initstatus == 0 or die "git init exited: ".PerforceLink::decode_exitstatus($initstatus)."\n";
+}
+
+$p4base =~ s{/(\.\.\.)?$}{};
+
+sub fetch_p4user($) {
+    my $userid = shift;
+    my $userinfo = p4_recv("user", "-o", $userid);
+    return { id => $userinfo->{User}, email => $userinfo->{Email}, name => $userinfo->{FullName} };
+}
+
+sub get_p4user($) {
+    my $userid = shift;
+    our %users;
+    return $users{$userid} ||= fetch_p4user($userid);
+}
+
+sub decode_p4_filetype($) {
+    my $filetype = shift;
+    my $aliased = FILETYPE_ALIASES->{$filetype};
+    return @$aliased if ($aliased);
+    my($basetype, $mods) = split(/\+/, $filetype, 2);
+    $mods ||= '';
+    return ($basetype, $mods);
+}
+
+my @p4changes;
+for my $p4change (p4_recv("changes", "-l", "-t", "$p4base/...")) {
+    my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0];
+    my $p4user_info = get_p4user($p4change->{user});
+    unshift @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
+}
+
+my $slavepipe = IO::Pipe->new;
+my $slavepid = fork;
+die "Cannot fork: $!\n" unless (defined $slavepid);
+if ($slavepid == 0) {
+    $slavepipe->reader;
+    open(STDIN, "<&=".$slavepipe->fileno) or die "Unable to redirect stdin: $!\n";
+    $ENV{GIT_DIR} = -d "$git_repo_dir/.git" ? "$git_repo_dir/.git" : $git_repo_dir;
+    exec "git", "fast-import" or die "Can't exec git fast-import: $!\n";
+}
+$slavepipe->writer;
+
+my $current_p4user = get_p4user($ENV{P4USER} || [getpwuid($<)]->[0]);
+my $last_checkpoint = [time, 0, 0];
+my $checkpoint_interval = $opt_T;
+my $checkpoint_commits = $opt_C;
+my $checkpoint_bytes = $opt_B;
+my $data_sent = 0;
+my $max_changes = $opt_m || 0;
+my $prevchange;
+my $chgcounter;
+for my $p4change (@p4changes) {
+    $slavepipe->print("progress $p4change->{id} - $p4change->{user}->{id} - $p4change->{subject}\n");
+    my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
+    my $commit_text = $p4change->{desc};
+
+    $slavepipe->print("commit refs/remotes/p4/$p4_remote_branch\n");
+    $slavepipe->print("mark :$p4change->{id}\n");
+    $slavepipe->print("committer $p4change->{user}->{name} <$p4change->{user}->{email}> $p4change->{time} +0000\n");
+    $slavepipe->print("data ".length($commit_text)."\n");
+    $slavepipe->print("$commit_text\n");
+    $slavepipe->print("from :$prevchange->{id}\n") if ($prevchange);
+
+    for (my $i = 0; exists $raw_changeinfo->{"action$i"}; $i++) {
+	my($action, $file, $type, $rev) = map { $raw_changeinfo->{$_} } ("action$i", "depotFile$i", "type$i", "rev$i" );
+	my($basetype, $typemods) = decode_p4_filetype($type);
+	$slavepipe->print("# $action $file#$rev\n");
+	next if (length($file) < length($p4base) || substr($file, 0, length($p4base)) ne $p4base);
+	my $git_path = substr($file, length($p4base)+1);
+	if ($action eq 'delete') {
+	    $slavepipe->print("D $git_path\n");
+	}
+	else {
+	    my $tmpfilename = "/tmp/p4fi$$";
+	    open(DATA, ">$tmpfilename") or die "Unable to write $tmpfilename: $!\n";
+	    my $filterpid;
+	    my $filterpipe;
+	    if ($basetype eq 'text' && $typemods =~ /k(o?)/) {
+		my $restricted = defined($1);
+		$filterpipe = IO::Pipe->new;
+		$filterpid = fork;
+		die "Cannot fork: $!\n" unless (defined $filterpid);
+		if ($filterpid == 0) {
+		    $filterpipe->reader;
+		    my $changes = 0;
+		    my $lines = 0;
+		    open(STDIN, "<&=".$filterpipe->fileno) or die "Unable to redirect stdin: $!\n";
+		    while (<STDIN>) {
+			++$lines;
+			s{\$Id: \S+\#\d+ \$}{\$Id\$}g && ++$changes;
+			s{\$Header: [^\$]+ \$}{\$Header\$}g && ++$changes;
+			print DATA;
+		    }
+		    exit;
+		}
+		$filterpipe->writer;
+	    }
+	    my $printpid = fork;
+	    die "Cannot fork: $!\n" unless (defined $printpid);
+	    if ($printpid == 0) {
+		if ($filterpipe) {
+		    open(STDOUT, ">&=".$filterpipe->fileno) or die "Unable to redirect stdout: $!\n";
+		    my $flags = fcntl(STDOUT, F_GETFD, 0);
+		    if ($flags & FD_CLOEXEC) {
+			fcntl(STDOUT, F_SETFD, $flags & ~FD_CLOEXEC);
+		    }
+		}
+		else {
+		    open(STDOUT, ">&=".(fileno DATA)) or die "Unable to redirect stdout: $!\n";
+		}
+		exec "p4", "print", "-q", "$file#$rev" or die "Unable to exec p4 print: $!\n";
+	    }
+	    $filterpipe->close if ($filterpipe);
+	    waitpid($printpid, 0) or die "Unable to wait for $printpid: $!\n";
+	    my $printstatus = $?;
+	    $printstatus == 0 or die "p4 print exited: ".PerforceLink::decode_exitstatus($printstatus)."\n";
+	    if ($filterpid) {
+		waitpid($filterpid, 0) or die "Unable to wait for $filterpid: $!\n";
+		my $filterstatus = $?;
+		$filterstatus == 0 or die "data filter exited: ".PerforceLink::decode_exitstatus($filterstatus)."\n";
+	    }
+	    my $file_size = -s $tmpfilename;
+	    $slavepipe->print("M 100644 inline $git_path\n");
+	    $slavepipe->print("data $file_size\n");
+	    open(DATA, $tmpfilename) or die "Unable to read temporary file: $!\n";
+	    my $remain = $file_size;
+	    my $got = 0;
+	    my $buf;
+	    while (($got = sysread(DATA, $buf, 16384)) > 0) {
+		$remain -= $got;
+		$slavepipe->print($buf);
+	    }
+	    if ($remain != 0) {
+		die "Lost $remain bytes when reading temp file\n";
+	    }
+	    $slavepipe->print("\n");
+	    $data_sent += $file_size;
+	}
+    }
+
+    $slavepipe->print("reset refs/tags/p4/$p4change->{id}\n");
+    $slavepipe->print("from :$p4change->{id}\n");
+    $slavepipe->print("\n");
+
+    $prevchange = $p4change;
+    ++$chgcounter;
+
+    my %need_checkpoint;
+    $need_checkpoint{time} = 1 if ($checkpoint_interval && time > ($last_checkpoint->[0]+$checkpoint_interval));
+    $need_checkpoint{commits} = 1 if ($checkpoint_commits && $chgcounter > ($last_checkpoint->[1]+$checkpoint_commits));
+    $need_checkpoint{bytes} = 1 if ($checkpoint_bytes && $data_sent > ($last_checkpoint->[2]+$checkpoint_bytes));
+
+    if (keys %need_checkpoint) {
+	$slavepipe->print("checkpoint\n");
+	$slavepipe->print("progress Checkpoint: ".join(", ", sort keys %need_checkpoint).": $chgcounter/".scalar @p4changes."\n");
+	$last_checkpoint = [time, $chgcounter, $data_sent];
+    }
+
+    last if ($max_changes > 0 && $chgcounter >= $max_changes);
+}
+
+$slavepipe->print("progress All done; $chgcounter changes, $data_sent bytes");
+
+$slavepipe->close;
+waitpid($slavepid, 0) or die "Unable to wait for git slave: $!\n";
+my $slavestatus = $?;
+$slavestatus == 0 or die "git slave exited: ".PerforceLink::decode_exitstatus($slavestatus)."\n";
+
+my $repo = Git->repository(Directory => $git_repo_dir);
+
+# Set refs/heads/master to the new branch if it does not already exist, check out the tree if repo is not bare
+if ($repo->command_oneline("show-ref") !~ m{ refs/heads/master$}) {
+    $repo->command_noisy("update-ref", "refs/heads/master", "refs/remotes/p4/$p4_remote_branch");
+    if ($repo->command_oneline("config", "core.bare") eq 'false') {
+	$repo->command_noisy("read-tree", "refs/heads/master");
+	$repo->command_noisy("checkout-index", "-a", "-u");
+    }
+}
