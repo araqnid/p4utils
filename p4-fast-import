@@ -146,34 +146,12 @@ for my $p4change (@p4changes) {
 	else {
 	    my $tmpfilename = "/tmp/p4fi$$";
 	    open(DATA, ">$tmpfilename") or die "Unable to write $tmpfilename: $!\n";
-	    my $filterpid;
-	    my $filterpipe;
-	    if ($basetype eq 'text' && $typemods =~ /k(o?)/) {
-		my $restricted = $1 eq 'o';
-		$filterpipe = IO::Pipe->new;
-		$filterpid = fork;
-		die "Cannot fork: $!\n" unless (defined $filterpid);
-		if ($filterpid == 0) {
-		    $filterpipe->reader;
-		    my $changes = 0;
-		    my $lines = 0;
-		    open(STDIN, "<&=".$filterpipe->fileno) or die "Unable to redirect stdin: $!\n";
-		    while (<STDIN>) {
-			++$lines;
-			s{\$Id: \S+\#\d+ \$}{\$Id\$}g && ++$changes;
-			s{\$Header: [^\$]+ \$}{\$Header\$}g && ++$changes;
-			s{\$(Author|Date|DateTime|Change|File|Revision): [^\$]+ \$}{\$$1\$}g && ++$changes
-			    unless ($restricted);
-			print DATA;
-		    }
-		    exit;
-		}
-		$filterpipe->writer;
-	    }
+	    my $filterpipe = ($basetype eq 'text' && $typemods =~ /k/) && IO::Pipe->new;
 	    my $printpid = fork;
 	    die "Cannot fork: $!\n" unless (defined $printpid);
 	    if ($printpid == 0) {
 		if ($filterpipe) {
+		    $filterpipe->writer;
 		    open(STDOUT, ">&=".$filterpipe->fileno) or die "Unable to redirect stdout: $!\n";
 		    my $flags = fcntl(STDOUT, F_GETFD, 0);
 		    if ($flags & FD_CLOEXEC) {
@@ -185,15 +163,26 @@ for my $p4change (@p4changes) {
 		}
 		exec "p4", "print", "-q", "$file#$rev" or die "Unable to exec p4 print: $!\n";
 	    }
-	    $filterpipe->close if ($filterpipe);
+	    if ($filterpipe) {
+		my $restricted = $typemods =~ /k(o?)/ && $1 eq 'o';
+		$filterpipe->reader;
+		my $changes = 0;
+		my $lines = 0;
+		while (<$filterpipe>) {
+		    ++$lines;
+		    s{\$Id: \S+\#\d+ \$}{\$Id\$}g && ++$changes;
+		    s{\$Header: [^\$]+ \$}{\$Header\$}g && ++$changes;
+		    s{\$(Author|Date|DateTime|Change|File|Revision): [^\$]+ \$}{\$$1\$}g && ++$changes
+			unless ($restricted);
+		    print DATA;
+		}
+		$filterpipe->close;
+	    }
 	    waitpid($printpid, 0) or die "Unable to wait for $printpid: $!\n";
 	    my $printstatus = $?;
 	    $printstatus == 0 or die "p4 print exited: ".PerforceLink::decode_exitstatus($printstatus)."\n";
-	    if ($filterpid) {
-		waitpid($filterpid, 0) or die "Unable to wait for $filterpid: $!\n";
-		my $filterstatus = $?;
-		$filterstatus == 0 or die "data filter exited: ".PerforceLink::decode_exitstatus($filterstatus)."\n";
-	    }
+	    close(DATA);
+
 	    my $file_size = -s $tmpfilename;
 	    my $mode = ($typemods =~ /x/) ? "100755" : "100644";
 	    $slavepipe->print("M $mode inline $git_path\n");
