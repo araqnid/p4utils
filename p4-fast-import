@@ -30,7 +30,7 @@ use constant FILETYPE_ALIASES => {
 };
 use vars qw($opt_b $opt_m $opt_n $opt_C $opt_B $opt_T);
 
-getopts("b:m:n") && @ARGV == 2 or die "Syntax: $0 [-b remote-branch-name] [-m max-changes] [-n] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root git-repo\n";
+getopts("b:m:nB:C:T:") && @ARGV == 2 or die "Syntax: $0 [-b remote-branch-name] [-m max-changes] [-n] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root git-repo\n";
 
 my($p4base, $git_repo_dir) = @ARGV;
 my $p4_remote_branch = $opt_b || 'main';
@@ -130,7 +130,7 @@ for my $p4change (@p4changes) {
 	    my $filterpid;
 	    my $filterpipe;
 	    if ($basetype eq 'text' && $typemods =~ /k(o?)/) {
-		my $restricted = defined($1);
+		my $restricted = $1 eq 'o';
 		$filterpipe = IO::Pipe->new;
 		$filterpid = fork;
 		die "Cannot fork: $!\n" unless (defined $filterpid);
@@ -143,6 +143,8 @@ for my $p4change (@p4changes) {
 			++$lines;
 			s{\$Id: \S+\#\d+ \$}{\$Id\$}g && ++$changes;
 			s{\$Header: [^\$]+ \$}{\$Header\$}g && ++$changes;
+			s{\$(Author|Date|DateTime|Change|File|Revision): [^\$]+ \$}{\$$1\$}g && ++$changes
+			    unless ($restricted);
 			print DATA;
 		    }
 		    exit;
