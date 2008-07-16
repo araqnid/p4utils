@@ -272,7 +272,7 @@ if ($subcommand eq 'clone') {
     if ($git_repo) {
 	$git_repo->command_noisy("config", "p4-remote.p4.base", $p4base);
 	for my $spec (@branchspecs) {
-	    $git_repo->command_noisy("config", "--add", "p4-remote.p4.fetch", "$spec->[0]:$spec->[1]");
+	    $git_repo->command_noisy("config", "--add", "p4-remote.p4.fetch", $spec->[0] eq $spec->[1] ? $spec->[0] : "$spec->[0]:$spec->[1]");
 	}
     }
 
