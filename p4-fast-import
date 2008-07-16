@@ -178,7 +178,6 @@ sub fetch_p4_changes($$$$$$) {
 	last if ($max_changes > 0 && $chgcounter >= $max_changes);
     }
 
-    $slavepipe->print("checkpoint\n");
     $slavepipe->print("progress All done; $chgcounter changes, $data_sent bytes\n");
 
     return $last_change && $last_change->{id};
