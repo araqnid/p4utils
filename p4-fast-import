@@ -204,14 +204,32 @@ sub convertpath($$$) {
     return $dirname;
 }
 
+sub get_config_optional($$) {
+    my $git_repo = shift;
+    my $key = shift;
+
+    try {
+	return $git_repo->command_oneline("config", "--get", $key);
+    } catch Git::Error::Command with {
+	return undef;
+    }
+}
+
 sub fetch_last_changelist($$$) {
     my $git_repo = shift;
     my $p4_remote_name = shift;
     my $branch = shift;
 
+    return get_config_optional($git_repo, "branch.refs/remotes/$p4_remote_name/$branch.changelist");
+}
+
+sub get_current_branch($) {
+    my $git_repo = shift;
     try {
-	return $git_repo->command_oneline("config", "branch.refs/remotes/$p4_remote_name/$branch.changelist");
+	my $head_ref = $git_repo->command_oneline("symbolic-ref", "HEAD");
+	return $head_ref =~ m|^refs/heads/(.+)| && $1;
     } catch Git::Error::Command with {
+	# e.g. detached head
 	return undef;
     }
 }
@@ -355,6 +373,17 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     my $git_repo_dir = $opts{d};
     my $git_repo = Git->repository(Directory => ($git_repo_dir && abs_path($git_repo_dir)));
 
+    # If pulling, glean the remote name from the branch config if possible
+    if (!$globalopts{r} && $subcommand eq 'pull' && $git_repo->command_oneline("config", "core.bare") eq 'false') {
+	my $current_branch = get_current_branch($git_repo);
+	if ($current_branch) {
+	    my $branch_remote = get_config_optional($git_repo, "branch.$current_branch.p4-remote");
+	    if ($branch_remote) {
+		$remotename = $branch_remote;
+	    }
+	}
+    }
+
     my $p4base;
     my @branchspecs;
     if (@ARGV) {
@@ -440,9 +469,35 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     }
 
     if ($subcommand eq 'pull') {
-	# Update branches in repo
-	# Should check that fast-forward is in fact valid
-	$git_repo->command_noisy("update-ref", "-m", "$master_p4base imported from Perforce", "refs/heads/master", "refs/remotes/$remotename/$master_branch");
+	if ($git_repo->command_oneline("config", "core.bare") eq 'false') {
+	    my $current_branch = get_current_branch($git_repo);
+	    if (!$current_branch) {
+		warn "You don't appear to be on a branch head for merging.\n";
+	    }
+	    else {
+		my $branch_remote = get_config_optional($git_repo, "branch.$current_branch.p4-remote");
+		if (!$branch_remote) {
+		    warn "Branch '$current_branch' does not have a p4-remote configured\n";
+		}
+		elsif ($branch_remote ne $remotename) {
+		    # Actually, we should decide which remote we are using based on the current branch.
+		    warn "Branch '$current_branch' is configured for remote '$branch_remote'\n";
+		}
+		else {
+		    my $rebase_p4branch = get_config_optional($git_repo, "branch.$current_branch.rebase");
+		    my $merge_p4branch = get_config_optional($git_repo, "branch.$current_branch.merge");
+		    if ($merge_p4branch) {
+			$git_repo->command_noisy("merge", "refs/remotes/$remotename/$merge_p4branch");
+		    }
+		    elsif ($rebase_p4branch) {
+			$git_repo->command_noisy("rebase", "refs/remotes/$remotename/$rebase_p4branch");
+		    }
+		    else {
+			warn "Branch '$current_branch' does not have a configuration of which p4 branch to merge or rebase from\n";
+		    }
+		}
+	    }
+	}
     }
 }
 else {
