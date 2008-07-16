@@ -367,12 +367,15 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     }
     else {
 	$p4base = $git_repo->command_oneline("config", "p4-remote.p4.base");
-	for (split(/\n/, $git_repo->command("config", "--get-all", "p4-remote.p4.fetch"))) {
-	    m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
-	    my($subdir_pattern, $branch_pattern) = ($1, $2);
-	    $branch_pattern ||= $subdir_pattern;
-	    push @branchspecs, [$subdir_pattern, $branch_pattern];
-	}
+	try {
+	    for (split(/\n/, $git_repo->command("config", "--get-all", "p4-remote.p4.fetch"))) {
+		m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
+		my($subdir_pattern, $branch_pattern) = ($1, $2);
+		$branch_pattern ||= $subdir_pattern;
+		push @branchspecs, [$subdir_pattern, $branch_pattern];
+	    }
+	} catch Git::Error::Command with {
+	};
     }
 
     my($fast_import_pipe, $fast_import_ctx);
