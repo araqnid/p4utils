@@ -213,6 +213,7 @@ if ($subcommand eq 'clone') {
     my $git_repo;
     if (!$git_repo_dir) {
 	($git_repo_dir = $p4base) =~ s|.*/||;
+	$git_repo_dir .= ".git" if ($opts{n});
 	$git_repo_dir = abs_path($git_repo_dir);
     }
     if (!$opts{o}) {
