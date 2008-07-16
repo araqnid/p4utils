@@ -1,0 +1,17 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use Data::Dumper;
+use PerforceLink qw(:marshal);
+
+my @objects;
+while (!eof STDIN) {
+    push @objects, unmarshal(\*STDIN);
+}
+
+for (@objects) {
+    print Data::Dumper->new([$_], [qw|obj|])->Terse(1)->Dump;
+}

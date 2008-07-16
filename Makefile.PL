@@ -4,7 +4,7 @@ use utf8;
 
 WriteMakefile(
     NAME => "Git::P4Link",
-    EXE_FILES => [qw|p4-fast-import|],
+    EXE_FILES => [qw|p4-fast-import unmarshal|],
     PREREQ_PM => {
 	Git => undef,
 	IO::Wrap => undef,
