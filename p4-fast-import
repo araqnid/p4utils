@@ -58,8 +58,8 @@ sub validate_p4_base($) {
     p4_recv("dirs", $dir) or die "Perforce base directory does not exist: $dir\n";
 }
 
-sub fetch_p4_changes($$$$$$) {
-    my($slavepipe, $p4base, $previous_tip_change, $p4_remote_branch, $max_changes, $checkpoint_interval) = @_;
+sub fetch_p4_changes($$$$$$$) {
+    my($slavepipe, $p4base, $previous_tip_change, $p4_remote_name, $p4_remote_branch, $max_changes, $checkpoint_interval) = @_;
     my $last_checkpoint = [time, 0, 0];
     my $data_sent = 0;
     my $chgcounter = 0;
@@ -68,7 +68,7 @@ sub fetch_p4_changes($$$$$$) {
 
     my @p4changes;
     for my $p4change (p4_recv("changes", "-l", "-t", "$p4base/...".($previous_tip_change ? join("", '@', $previous_tip_change+1, ",#head") : ""))) {
-	my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0];
+	my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0] || '';
 	my $p4user_info = get_p4user($p4change->{user});
 	unshift @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
     }
@@ -79,13 +79,13 @@ sub fetch_p4_changes($$$$$$) {
 	my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
 	my $commit_text = $p4change->{desc};
 
-	$slavepipe->print("commit refs/remotes/p4/$p4_remote_branch\n");
+	$slavepipe->print("commit refs/remotes/$p4_remote_name/$p4_remote_branch\n");
 	$slavepipe->print("mark :$p4change->{id}\n");
 	$slavepipe->print("committer $p4change->{user}->{FullName} <$p4change->{user}->{Email}> $p4change->{time} +0000\n");
 	$slavepipe->print("data ".length($commit_text)."\n");
 	$slavepipe->print("$commit_text\n");
 	if (!$last_change && $previous_tip_change) {
-	    $slavepipe->print("from refs/remotes/p4/$p4_remote_branch^0\n");
+	    $slavepipe->print("from refs/remotes/$p4_remote_name/$p4_remote_branch^0\n");
 	}
 
 	for (my $i = 0; exists $raw_changeinfo->{"action$i"}; $i++) {
@@ -157,7 +157,7 @@ sub fetch_p4_changes($$$$$$) {
 	    }
 	}
 
-	$slavepipe->print("reset refs/tags/p4/$p4change->{id}\n");
+	$slavepipe->print("reset refs/tags/$p4_remote_name/$p4change->{id}\n");
 	$slavepipe->print("from :$p4change->{id}\n");
 	$slavepipe->print("\n");
 
@@ -204,20 +204,22 @@ sub convertpath($$$) {
     return $dirname;
 }
 
-sub fetch_last_changelist($$) {
+sub fetch_last_changelist($$$) {
     my $git_repo = shift;
+    my $p4_remote_name = shift;
     my $branch = shift;
 
     try {
-	return $git_repo->command_oneline("config", "branch.refs/remotes/p4/$branch.changelist");
+	return $git_repo->command_oneline("config", "branch.refs/remotes/$p4_remote_name/$branch.changelist");
     } catch Git::Error::Command with {
 	return undef;
     }
 }
 
 my %globalopts;
-getopts('d', \%globalopts) && @ARGV >= 1 or die "Syntax: $0 [-d] subcommand [args...]\n";
+getopts('dr:', \%globalopts) && @ARGV >= 1 or die "Syntax: $0 [-d] subcommand [args...]\n";
 $PerforceLink::DEBUG = 1 if ($globalopts{d});
+my $remotename = $globalopts{r} || 'p4';
 my $subcommand = shift;
 
 if ($subcommand eq 'clone') {
@@ -269,9 +271,9 @@ if ($subcommand eq 'clone') {
     }
 
     if ($git_repo) {
-	$git_repo->command_noisy("config", "p4-remote.p4.base", $p4base);
+	$git_repo->command_noisy("config", "p4-remote.$remotename.base", $p4base);
 	for my $spec (@branchspecs) {
-	    $git_repo->command_noisy("config", "--add", "p4-remote.p4.fetch", $spec->[0] eq $spec->[1] ? $spec->[0] : "$spec->[0]:$spec->[1]");
+	    $git_repo->command_noisy("config", "--add", "p4-remote.$remotename.fetch", $spec->[0] eq $spec->[1] ? $spec->[0] : "$spec->[0]:$spec->[1]");
 	}
     }
 
@@ -315,13 +317,13 @@ if ($subcommand eq 'clone') {
 		    $master_p4base = $p4subpath;
 		}
 
-		my $last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, undef, $branch, $max_changes, \%checkpoint_interval);
+		my $last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, undef, $remotename, $branch, $max_changes, \%checkpoint_interval);
 		$high_water_mark{$branch} = $last_change if ($last_change);
 	    }
 	}
     }
     else {
-	my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, "master", $max_changes, \%checkpoint_interval);
+	my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, $remotename, "master", $max_changes, \%checkpoint_interval);
 	$high_water_mark{master} = $last_change if ($last_change);
 	$master_branch = 'master';
 	$master_p4base = $p4base;
@@ -331,13 +333,13 @@ if ($subcommand eq 'clone') {
 	$git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
 
 	while (my($branch, $changeid) = each %high_water_mark) {
-	    $git_repo->command("config", "branch.refs/remotes/p4/$branch.changelist", $changeid) if ($changeid);
+	    $git_repo->command("config", "branch.refs/remotes/$remotename/$branch.changelist", $changeid) if ($changeid);
 	}
 
 	# Set refs/heads/master to the new branch if it does not already exist, check out the tree if repo is not bare
 	if ($git_repo->command("show-ref") !~ m{ refs/heads/master$}) {
-	    $git_repo->command_noisy("update-ref", "-m", "$master_p4base imported from Perforce", "refs/heads/master", "refs/remotes/p4/$master_branch");
-	    $git_repo->command("config", "branch.master.p4-remote", "p4");
+	    $git_repo->command_noisy("update-ref", "-m", "$master_p4base imported from Perforce", "refs/heads/master", "refs/remotes/$remotename/$master_branch");
+	    $git_repo->command("config", "branch.master.p4-remote", $remotename);
 	    $git_repo->command("config", "branch.master.rebase", $master_branch);
 	    # This assumes HEAD is master... which is the case if the repo is new
 	    if ($git_repo->command_oneline("config", "core.bare") eq 'false') {
@@ -365,9 +367,9 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 	}
     }
     else {
-	$p4base = $git_repo->command_oneline("config", "p4-remote.p4.base");
+	$p4base = $git_repo->command_oneline("config", "p4-remote.$remotename.base");
 	try {
-	    for (split(/\n/, $git_repo->command("config", "--get-all", "p4-remote.p4.fetch"))) {
+	    for (split(/\n/, $git_repo->command("config", "--get-all", "p4-remote.$remotename.fetch"))) {
 		m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
 		my($subdir_pattern, $branch_pattern) = ($1, $2);
 		$branch_pattern ||= $subdir_pattern;
@@ -417,15 +419,15 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 		    $master_p4base = $p4subpath;
 		}
 
-		my $last_change = fetch_last_changelist($git_repo, $branch);
-		$last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, $last_change, $branch, $max_changes, \%checkpoint_interval);
+		my $last_change = fetch_last_changelist($git_repo, $remotename, $branch);
+		$last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, $last_change, $remotename, $branch, $max_changes, \%checkpoint_interval);
 		$high_water_mark{$branch} = $last_change;
 	    }
 	}
     }
     else {
-	my $last_change = fetch_last_changelist($git_repo, 'master');
-	$last_change = fetch_p4_changes($fast_import_pipe, $p4base, $last_change, "master", $max_changes, \%checkpoint_interval);
+	my $last_change = fetch_last_changelist($git_repo, $remotename, 'master');
+	$last_change = fetch_p4_changes($fast_import_pipe, $p4base, $last_change, $remotename, "master", $max_changes, \%checkpoint_interval);
 	$high_water_mark{master} = $last_change;
 	$master_branch = 'master';
 	$master_p4base = $p4base;
@@ -434,13 +436,13 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     $git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
 
     while (my($branch, $changeid) = each %high_water_mark) {
-	$git_repo->command("config", "branch.refs/remotes/p4/$branch.changelist", $changeid) if ($changeid);
+	$git_repo->command("config", "branch.refs/remotes/$remotename/$branch.changelist", $changeid) if ($changeid);
     }
 
     if ($subcommand eq 'pull') {
 	# Update branches in repo
 	# Should check that fast-forward is in fact valid
-	$git_repo->command_noisy("update-ref", "-m", "$master_p4base imported from Perforce", "refs/heads/master", "refs/remotes/p4/$master_branch");
+	$git_repo->command_noisy("update-ref", "-m", "$master_p4base imported from Perforce", "refs/heads/master", "refs/remotes/$remotename/$master_branch");
     }
 }
 else {
