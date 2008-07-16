@@ -321,7 +321,7 @@ if ($subcommand eq 'clone') {
 	}
     }
     else {
-	my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, "main", $max_changes, \%checkpoint_interval);
+	my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, "master", $max_changes, \%checkpoint_interval);
 	$high_water_mark{master} = $last_change if ($last_change);
 	$master_branch = 'master';
 	$master_p4base = $p4base;
