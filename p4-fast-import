@@ -90,6 +90,10 @@ for my $p4change (p4_recv("changes", "-l", "-t", "$p4base/...")) {
     unshift @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
 }
 
+if (!p4_recv("dirs", $p4base)) {
+    die "Perforce base directory does not exist: $p4base\n";
+}
+
 my $slavepipe;
 my $slavepid;
 if ($opt_o) {
