@@ -190,7 +190,8 @@ sub convertpath($$$) {
     my $output_pattern = shift;
 
     # Trivial cases
-    return $dirname if ($input_pattern !~ /\*/ || $input_pattern eq $output_pattern);
+    return $output_pattern if ($input_pattern !~ /\*/ && $input_pattern eq $dirname);
+    return $dirname if ($input_pattern eq $output_pattern);
 
     my $input_re = $input_pattern;
     $input_re =~ s{\*}{(.*)};
