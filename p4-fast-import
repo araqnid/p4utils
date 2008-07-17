@@ -93,7 +93,7 @@ sub fetch_p4_changes($$$$$$$) {
 	    $slavepipe->print("# $action $file#$rev\n");
 	    next if (length($file) < length($p4base) || substr($file, 0, length($p4base)) ne $p4base);
 	    my $git_path = substr($file, length($p4base)+1);
-	    if ($action eq 'delete') {
+	    if ($action eq 'delete' || $action eq 'purge') {
 		$slavepipe->print("D $git_path\n");
 	    }
 	    else {
