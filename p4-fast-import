@@ -98,8 +98,8 @@ sub fetch_p4_changes($$$$$$$) {
 		$slavepipe->print("D $git_path\n");
 	    }
 	    else {
-		my $tmpfilename = "/tmp/p4fi$$";
-		open(DATA, ">$tmpfilename") or die "Unable to write $tmpfilename: $!\n";
+		my $tmpfilename = ($ENV{TMPDIR} || "/tmp")."/p4fi".sprintf("%x%x%x", rand() * 0x10000, $$, time);
+		sysopen(DATA, $tmpfilename, O_WRONLY|O_EXCL|O_CREAT, 0600) or die "Unable to write $tmpfilename: $!\n";
 		my $filterpipe = ($basetype eq 'text' && $typemods =~ /k/) && IO::Pipe->new;
 		my $printpid = fork;
 		die "Cannot fork: $!\n" unless (defined $printpid);
@@ -152,6 +152,7 @@ sub fetch_p4_changes($$$$$$$) {
 		if ($remain != 0) {
 		    die "Lost $remain bytes when reading temp file\n";
 		}
+		unlink $tmpfilename;
 		$slavepipe->print("\n");
 		$data_sent += $file_size;
 	    }
