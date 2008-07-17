@@ -12,7 +12,6 @@ use Git;
 use Error qw(:try);
 use Data::Dumper;
 use Cwd qw(abs_path);
-use Fcntl;
 use PerforceLink qw(:p4);
 # p4 help filetypes
 use constant FILETYPE_ALIASES => {
@@ -107,10 +106,6 @@ sub fetch_p4_changes($$$$$$$) {
 		    if ($filterpipe) {
 			$filterpipe->writer;
 			open(STDOUT, ">&=".$filterpipe->fileno) or die "Unable to redirect stdout: $!\n";
-			my $flags = fcntl(STDOUT, F_GETFD, 0);
-			if ($flags & FD_CLOEXEC) {
-			    fcntl(STDOUT, F_SETFD, $flags & ~FD_CLOEXEC);
-			}
 		    }
 		    else {
 			open(STDOUT, ">&=".(fileno DATA)) or die "Unable to redirect stdout: $!\n";
