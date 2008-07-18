@@ -12,6 +12,7 @@ use Git;
 use Error qw(:try);
 use Data::Dumper;
 use Cwd qw(abs_path);
+use Encode;
 use PerforceLink qw(:p4);
 # p4 help filetypes
 use constant FILETYPE_ALIASES => {
@@ -77,6 +78,7 @@ sub fetch_p4_changes($$$$$$$$) {
 	$slavepipe->print("progress $p4change->{id} - $p4change->{user}->{User} - $p4change->{subject}\n");
 	my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
 	my $commit_text = $p4change->{desc};
+	$commit_text = encode('utf-8', decode('iso-8859-1', $commit_text));
 
 	$slavepipe->print("commit refs/remotes/$p4_remote_name/$p4_remote_branch\n");
 	$slavepipe->print("mark :$p4change->{id}\n");
