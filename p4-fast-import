@@ -40,7 +40,7 @@ sub get_p4user($) {
 	    $usertab{$_->{User}} = $_;
 	}
     }
-    return $usertab{$userid} || { User => $userid, Email => "$userid\@defunct.example.com", FullName => "$userid" };
+    return $usertab{$userid} || { User => $userid, Email => $userid, FullName => $userid };
 }
 
 sub decode_p4_filetype($) {
