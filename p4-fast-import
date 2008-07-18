@@ -232,6 +232,15 @@ sub get_current_branch($) {
     }
 }
 
+sub update_high_water_marks($$%) {
+    my $git_repo = shift;
+    my $remotename = shift;
+    my %high_water_mark = @_;
+    while (my($branch, $changeid) = each %high_water_mark) {
+	$git_repo->command("config", "branch.refs/remotes/$remotename/$branch.changelist", $changeid) if ($changeid);
+    }
+}
+
 my %globalopts;
 getopts('dr:', \%globalopts) && @ARGV >= 1 or die "Syntax: $0 [-d] subcommand [args...]\n";
 $PerforceLink::DEBUG = 1 if ($globalopts{d});
@@ -350,9 +359,7 @@ if ($subcommand eq 'clone') {
     if ($git_repo) {
 	$git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
 
-	while (my($branch, $changeid) = each %high_water_mark) {
-	    $git_repo->command("config", "branch.refs/remotes/$remotename/$branch.changelist", $changeid) if ($changeid);
-	}
+	update_high_water_marks($git_repo, $remotename, %high_water_mark);
 
 	# Set refs/heads/master to the new branch if it does not already exist, check out the tree if repo is not bare
 	if ($git_repo->command("show-ref") !~ m{ refs/heads/master$}) {
@@ -467,9 +474,7 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 
     $git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
 
-    while (my($branch, $changeid) = each %high_water_mark) {
-	$git_repo->command("config", "branch.refs/remotes/$remotename/$branch.changelist", $changeid) if ($changeid);
-    }
+    update_high_water_marks($git_repo, $remotename, %high_water_mark);
 
     if ($subcommand eq 'pull') {
 	if ($git_repo->command_oneline("config", "core.bare") eq 'false') {
