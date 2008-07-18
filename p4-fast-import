@@ -58,8 +58,61 @@ sub validate_p4_base($) {
     p4_recv("dirs", $dir) or die "Perforce base directory does not exist: $dir\n";
 }
 
+sub convertpath($$$) {
+    my $dirname = shift;
+    my $input_pattern = shift;
+    my $output_pattern = shift;
+
+    # Trivial cases
+    return $output_pattern if ($input_pattern !~ /\*/ && $input_pattern eq $dirname);
+    return $dirname if ($input_pattern eq $output_pattern);
+
+    my $input_re = $input_pattern;
+    $input_re =~ s{\*}{(.*)};
+
+    my $output_string = $output_pattern;
+    my $index = 1;
+    $output_string =~ s{\*}{"\$".($index++)}ge;
+
+    eval "\$dirname =~ s{$input_re}{$output_string}";
+
+    return $dirname;
+}
+
+sub decode_p4path($$$) {
+    my $p4path = shift;
+    my $p4base = shift;
+    my $branchspecs = shift;
+
+    # Ignore files outside our base completely
+    return if (length($p4path) < length($p4base) || substr($p4path, 0, length($p4base)) ne $p4base);
+
+    my $residual = substr($p4path, length($p4base) + 1);
+
+    return ("master", $residual) if (!@$branchspecs);
+
+    for (@$branchspecs) {
+	my($subdir_pattern, $branch_pattern) = @$_;
+	my $input_re = $subdir_pattern;
+	$input_re =~ s{\*}{([^/]*)};
+	$input_re .= "/";
+
+	my $output_string = $branch_pattern;
+	my $index = 1;
+	$output_string =~ s{\*}{"\$".($index++)}ge;
+
+	if ($residual =~ s{$input_re}{}) {
+	    $output_string = eval "qq{$output_string}";
+	    return ($output_string, $residual);
+	    die Data::Dumper->new([$residual, $subdir_pattern, $branch_pattern, $input_re, $output_string], [qw|residual subdir_pattern branch_patern input_re output_string|])->Dump;
+	}
+    }
+
+    return (undef, $residual);
+}
+
 sub fetch_p4_changes($$$$$$$$) {
-    my($slavepipe, $p4base, $previous_tip_change, $p4_remote_name, $p4_remote_branch, $max_changes, $checkpoint_interval, $tag_changelists) = @_;
+    my($slavepipe, $p4base, $previous_tip_change, $p4_remote_name, $branchspecs, $max_changes, $checkpoint_interval, $tag_changelists) = @_;
     my $last_checkpoint = [time, 0, 0];
     my $data_sent = 0;
     my $chgcounter = 0;
@@ -79,22 +132,35 @@ sub fetch_p4_changes($$$$$$$$) {
 	my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
 	my $commit_text = $p4change->{desc};
 	$commit_text = encode('utf-8', decode('iso-8859-1', $commit_text));
-
-	$slavepipe->print("commit refs/remotes/$p4_remote_name/$p4_remote_branch\n");
-	$slavepipe->print("mark :$p4change->{id}\n");
-	$slavepipe->print("committer $p4change->{user}->{FullName} <$p4change->{user}->{Email}> $p4change->{time} +0000\n");
-	$slavepipe->print("data ".length($commit_text)."\n");
-	$slavepipe->print("$commit_text\n");
-	if (!$last_change && $previous_tip_change) {
-	    $slavepipe->print("from refs/remotes/$p4_remote_name/$p4_remote_branch^0\n");
-	}
+	my $current_branch;
 
 	for (my $i = 0; exists $raw_changeinfo->{"action$i"}; $i++) {
 	    my($action, $file, $type, $rev) = map { $raw_changeinfo->{$_} } ("action$i", "depotFile$i", "type$i", "rev$i" );
 	    my($basetype, $typemods) = decode_p4_filetype($type);
-	    $slavepipe->print("# $action $file#$rev\n");
-	    next if (length($file) < length($p4base) || substr($file, 0, length($p4base)) ne $p4base);
-	    my $git_path = substr($file, length($p4base)+1);
+
+	    my($branch, $git_path) = decode_p4path($file, $p4base, $branchspecs);
+
+	    unless ($git_path) {
+		$slavepipe->print("# $action $file#$rev (outside)\n");
+		next;
+	    }
+
+	    unless ($branch) {
+		$slavepipe->print("# $action $file#$rev (not mapped)\n");
+		next;
+	    }
+
+	    $slavepipe->print("# $action $file#$rev (-> $branch)\n");
+
+	    if (!$current_branch || $branch ne $current_branch) {
+		$slavepipe->print("commit refs/remotes/$p4_remote_name/$branch\n");
+		$slavepipe->print("mark :$p4change->{id}\n");
+		$slavepipe->print("committer $p4change->{user}->{FullName} <$p4change->{user}->{Email}> $p4change->{time} +0000\n");
+		$slavepipe->print("data ".length($commit_text)."\n");
+		$slavepipe->print("$commit_text\n");
+		$current_branch = $branch;
+	    }
+
 	    if ($action eq 'delete' || $action eq 'purge') {
 		$slavepipe->print("D $git_path\n");
 	    }
@@ -183,27 +249,6 @@ sub fetch_p4_changes($$$$$$$$) {
     return $last_change && $last_change->{id};
 }
 
-sub convertpath($$$) {
-    my $dirname = shift;
-    my $input_pattern = shift;
-    my $output_pattern = shift;
-
-    # Trivial cases
-    return $output_pattern if ($input_pattern !~ /\*/ && $input_pattern eq $dirname);
-    return $dirname if ($input_pattern eq $output_pattern);
-
-    my $input_re = $input_pattern;
-    $input_re =~ s{\*}{(.*)};
-
-    my $output_string = $output_pattern;
-    my $index = 1;
-    $output_string =~ s{\*}{"\$".($index++)}ge;
-
-    eval "\$dirname =~ s{$input_re}{$output_string}";
-
-    return $dirname;
-}
-
 sub get_config_optional($$) {
     my $git_repo = shift;
     my $key = shift;
@@ -231,15 +276,6 @@ sub get_current_branch($) {
     } catch Git::Error::Command with {
 	# e.g. detached head
 	return undef;
-    }
-}
-
-sub update_high_water_marks($$%) {
-    my $git_repo = shift;
-    my $remotename = shift;
-    my %high_water_mark = @_;
-    while (my($branch, $changeid) = each %high_water_mark) {
-	$git_repo->command("config", "branch.refs/remotes/$remotename/$branch.changelist", $changeid) if ($changeid);
     }
 }
 
@@ -323,59 +359,16 @@ if ($subcommand eq 'clone') {
     }
 
     my %checkpoint_interval = ( bytes => $opts{B}, commits => $opts{C}, time => $opts{T} );
+
     my $max_changes = $opts{m} || 0;
 
-    my $master_branch;
-    my $master_p4base;
-    my %high_water_mark;
-    if (@branchspecs) {
-	for (@branchspecs) {
-	    my($subdir_pattern, $branch_pattern) = @$_;
-
-	    my @subdirs = map { $_->{dir} } p4_recv("dirs", "$p4base/$subdir_pattern");
-	    if (!@subdirs) {
-		warn "No directories matching $subdir_pattern found under $p4base\n";
-		next;
-	    }
-
-	    for my $p4subpath (@subdirs) {
-		my $p4subdir = substr($p4subpath, length($p4base)+1);
-		my $branch = convertpath($p4subdir, $subdir_pattern, $branch_pattern);
-
-		validate_p4_base($p4subpath);
-
-		if (!$master_branch) {
-		    $master_branch = $branch;
-		    $master_p4base = $p4subpath;
-		}
-
-		my $last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, undef, $remotename, $branch, $max_changes, \%checkpoint_interval, $tag_changelists);
-		$high_water_mark{$branch} = $last_change if ($last_change);
-	    }
-	}
-    }
-    else {
-	my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, $remotename, "master", $max_changes, \%checkpoint_interval, $tag_changelists);
-	$high_water_mark{master} = $last_change if ($last_change);
-	$master_branch = 'master';
-	$master_p4base = $p4base;
-    }
+    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists);
 
     if ($git_repo) {
 	$git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
 
-	update_high_water_marks($git_repo, $remotename, %high_water_mark);
-
-	# Set refs/heads/master to the new branch if it does not already exist, check out the tree if repo is not bare
-	if ($git_repo->command("show-ref") !~ m{ refs/heads/master$}) {
-	    $git_repo->command_noisy("update-ref", "-m", "$master_p4base imported from Perforce", "refs/heads/master", "refs/remotes/$remotename/$master_branch");
-	    $git_repo->command("config", "branch.master.p4-remote", $remotename);
-	    $git_repo->command("config", "branch.master.rebase", $master_branch);
-	    # This assumes HEAD is master... which is the case if the repo is new
-	    if ($git_repo->command_oneline("config", "core.bare") eq 'false') {
-		$git_repo->command_noisy("checkout", "-f");
-	    }
-	}
+	$git_repo->command_noisy("config", "p4-remote.$remotename.changelist", $last_change) if ($last_change);
+	# TODO check out first branch
     }
 }
 elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
@@ -443,48 +436,10 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 
     my %checkpoint_interval = ( bytes => $opts{B}, commits => $opts{C}, time => $opts{T} );
     my $max_changes = $opts{m} || 0;
-
-    my $master_branch;
-    my $master_p4base;
-    my %high_water_mark;
-    if (@branchspecs) {
-	for (@branchspecs) {
-	    my($subdir_pattern, $branch_pattern) = @$_;
-
-	    my @subdirs = map { $_->{dir} } p4_recv("dirs", "$p4base/$subdir_pattern");
-	    if (!@subdirs) {
-		warn "No directories matching $subdir_pattern found under $p4base\n";
-		next;
-	    }
-
-	    for my $p4subpath (@subdirs) {
-		my $p4subdir = substr($p4subpath, length($p4base)+1);
-		my $branch = convertpath($p4subdir, $subdir_pattern, $branch_pattern);
-
-		validate_p4_base($p4subpath);
-
-		if (!$master_branch) {
-		    $master_branch = $branch;
-		    $master_p4base = $p4subpath;
-		}
-
-		my $last_change = fetch_last_changelist($git_repo, $remotename, $branch);
-		$last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, $last_change, $remotename, $branch, $max_changes, \%checkpoint_interval, $tag_changelists);
-		$high_water_mark{$branch} = $last_change;
-	    }
-	}
-    }
-    else {
-	my $last_change = fetch_last_changelist($git_repo, $remotename, 'master');
-	$last_change = fetch_p4_changes($fast_import_pipe, $p4base, $last_change, $remotename, "master", $max_changes, \%checkpoint_interval, $tag_changelists);
-	$high_water_mark{master} = $last_change;
-	$master_branch = 'master';
-	$master_p4base = $p4base;
-    }
+    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $git_repo->command_oneline("config", "p4-remote.$remotename.changelist"), $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists);
 
     $git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
-
-    update_high_water_marks($git_repo, $remotename, %high_water_mark);
+    $git_repo->command_noisy("config", "p4-remote.$remotename.changelist", $last_change);
 
     if ($subcommand eq 'pull') {
 	if ($git_repo->command_oneline("config", "core.bare") eq 'false') {
