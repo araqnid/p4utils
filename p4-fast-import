@@ -299,6 +299,9 @@ if ($subcommand eq 'clone') {
     if ($git_repo) {
 	$git_repo->command_noisy("config", "p4-remote.$remotename.base", $p4base);
 	$git_repo->command_noisy("config", "p4-remote.$remotename.tag-changelists", $opts{t} ? "true" : "false");
+	for my $envvar (qw|P4PORT P4USER P4CLIENT|) {
+	    $git_repo->command_noisy("config", "p4-remote.$remotename.\L$envvar", $ENV{$envvar}) if ($ENV{$envvar});
+	}
 	for my $spec (@branchspecs) {
 	    $git_repo->command_noisy("config", "--add", "p4-remote.$remotename.fetch", $spec->[0] eq $spec->[1] ? $spec->[0] : "$spec->[0]:$spec->[1]");
 	}
@@ -389,6 +392,11 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 		$remotename = $branch_remote;
 	    }
 	}
+    }
+
+    for my $envvar (qw|P4PORT P4USER P4CLIENT|) {
+	my $value = get_config_optional($git_repo, lc($envvar));
+	$ENV{$envvar} ||= $value if ($value);
     }
 
     my $tag_changelists = get_config_optional($git_repo, "p4-remote.$remotename.tag-changelists");
