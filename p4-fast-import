@@ -297,7 +297,7 @@ if ($subcommand eq 'clone') {
 
     my($fast_import_pipe, $fast_import_ctx);
     if ($git_repo) {
-	($fast_import_pipe, $fast_import_ctx) = $git_repo->command_input_pipe("fast-import", "--quiet");
+	($fast_import_pipe, $fast_import_ctx) = $git_repo->command_input_pipe("fast-import", $globalopts{d} ? () : ("--quiet"));
     }
     else {
 	if ($opts{o} eq '-') {
@@ -413,7 +413,7 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 
     my($fast_import_pipe, $fast_import_ctx);
     if ($git_repo) {
-	($fast_import_pipe, $fast_import_ctx) = $git_repo->command_input_pipe("fast-import", "--quiet");
+	($fast_import_pipe, $fast_import_ctx) = $git_repo->command_input_pipe("fast-import", $globalopts{d} ? () : ("--quiet"));
     }
     else {
 	if ($opts{o} eq '-') {
