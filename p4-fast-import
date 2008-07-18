@@ -57,8 +57,8 @@ sub validate_p4_base($) {
     p4_recv("dirs", $dir) or die "Perforce base directory does not exist: $dir\n";
 }
 
-sub fetch_p4_changes($$$$$$$) {
-    my($slavepipe, $p4base, $previous_tip_change, $p4_remote_name, $p4_remote_branch, $max_changes, $checkpoint_interval) = @_;
+sub fetch_p4_changes($$$$$$$$) {
+    my($slavepipe, $p4base, $previous_tip_change, $p4_remote_name, $p4_remote_branch, $max_changes, $checkpoint_interval, $tag_changelists) = @_;
     my $last_checkpoint = [time, 0, 0];
     my $data_sent = 0;
     my $chgcounter = 0;
@@ -153,9 +153,11 @@ sub fetch_p4_changes($$$$$$$) {
 	    }
 	}
 
-	$slavepipe->print("reset refs/tags/$p4_remote_name/$p4change->{id}\n");
-	$slavepipe->print("from :$p4change->{id}\n");
-	$slavepipe->print("\n");
+	if ($tag_changelists) {
+	    $slavepipe->print("reset refs/tags/$p4_remote_name/$p4change->{id}\n");
+	    $slavepipe->print("from :$p4change->{id}\n");
+	    $slavepipe->print("\n");
+	}
 
 	++$chgcounter;
 
@@ -238,7 +240,7 @@ my $subcommand = shift;
 
 if ($subcommand eq 'clone') {
     my %opts;
-    getopts("o:d:m:nC:B:T:", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root-dir [branchspec...]\n";
+    getopts("o:d:m:nC:B:T:t", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root-dir [branchspec...]\n";
 
     my $p4base = shift;
     $p4base =~ s{/(\.\.\.)?$}{};
@@ -276,6 +278,7 @@ if ($subcommand eq 'clone') {
 	die "GIT repo directory must not be given if -o is given\n";
     }
 
+    my $tag_changelists = $opts{t};
     my @branchspecs;
     for (@ARGV) {
 	m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
@@ -286,6 +289,7 @@ if ($subcommand eq 'clone') {
 
     if ($git_repo) {
 	$git_repo->command_noisy("config", "p4-remote.$remotename.base", $p4base);
+	$git_repo->command_noisy("config", "p4-remote.$remotename.tag-changelists", $opts{t} ? "true" : "false");
 	for my $spec (@branchspecs) {
 	    $git_repo->command_noisy("config", "--add", "p4-remote.$remotename.fetch", $spec->[0] eq $spec->[1] ? $spec->[0] : "$spec->[0]:$spec->[1]");
 	}
@@ -331,13 +335,13 @@ if ($subcommand eq 'clone') {
 		    $master_p4base = $p4subpath;
 		}
 
-		my $last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, undef, $remotename, $branch, $max_changes, \%checkpoint_interval);
+		my $last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, undef, $remotename, $branch, $max_changes, \%checkpoint_interval, $tag_changelists);
 		$high_water_mark{$branch} = $last_change if ($last_change);
 	    }
 	}
     }
     else {
-	my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, $remotename, "master", $max_changes, \%checkpoint_interval);
+	my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, $remotename, "master", $max_changes, \%checkpoint_interval, $tag_changelists);
 	$high_water_mark{master} = $last_change if ($last_change);
 	$master_branch = 'master';
 	$master_p4base = $p4base;
@@ -379,6 +383,9 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 	    }
 	}
     }
+
+    my $tag_changelists = get_config_optional($git_repo, "p4-remote.$remotename.tag-changelists");
+    $tag_changelists = !defined($tag_changelists) ? 1 : $tag_changelists eq 'true';
 
     my $p4base;
     my @branchspecs;
@@ -445,14 +452,14 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
 		}
 
 		my $last_change = fetch_last_changelist($git_repo, $remotename, $branch);
-		$last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, $last_change, $remotename, $branch, $max_changes, \%checkpoint_interval);
+		$last_change = fetch_p4_changes($fast_import_pipe, $p4subpath, $last_change, $remotename, $branch, $max_changes, \%checkpoint_interval, $tag_changelists);
 		$high_water_mark{$branch} = $last_change;
 	    }
 	}
     }
     else {
 	my $last_change = fetch_last_changelist($git_repo, $remotename, 'master');
-	$last_change = fetch_p4_changes($fast_import_pipe, $p4base, $last_change, $remotename, "master", $max_changes, \%checkpoint_interval);
+	$last_change = fetch_p4_changes($fast_import_pipe, $p4base, $last_change, $remotename, "master", $max_changes, \%checkpoint_interval, $tag_changelists);
 	$high_water_mark{master} = $last_change;
 	$master_branch = 'master';
 	$master_p4base = $p4base;
