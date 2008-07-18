@@ -141,14 +141,15 @@ sub accumulate_changes($$$) {
 }
 
 sub fetch_p4_changes($$$$$$$$$) {
-    my($slavepipe, $p4base, $previous_tip_change, $p4_remote_name, $branchspecs, $max_changes, $checkpoint_interval, $tag_changelists, $known_branches) = @_;
+    my($slavepipe, $p4base, $p4_remote_name, $branchspecs, $max_changes, $checkpoint_interval, $tag_changelists, $known_branches, $git_repo) = @_;
     my $last_checkpoint = [time, 0, 0];
     my $data_sent = 0;
     my $chgcounter = 0;
 
-    $slavepipe->print("progress $p4base/...".($previous_tip_change ? " since \@$previous_tip_change":"")."\n");
+    my $since_changelist = $git_repo && get_config_optional($git_repo, "p4-remote.$p4_remote_name.changelist");
+    $slavepipe->print("progress $p4base/...".($since_changelist ? " since \@$since_changelist":"")."\n");
 
-    my @p4changes = accumulate_changes($p4base, $branchspecs, $previous_tip_change);
+    my @p4changes = accumulate_changes($p4base, $branchspecs, $since_changelist);
 
     my $last_change;
     my %seen_branch;
@@ -290,6 +291,7 @@ sub fetch_p4_changes($$$$$$$$$) {
 	    $slavepipe->print("checkpoint\n");
 	    $slavepipe->print("progress Checkpoint: ".join(", ", sort keys %need_checkpoint).": $chgcounter/".scalar @p4changes."\n");
 	    $last_checkpoint = [time, $chgcounter, $data_sent];
+	    $git_repo->command_noisy("config", "p4-remote.$p4_remote_name.changelist", $p4change->{id}) if ($git_repo);
 	}
 
 	$last_change = $p4change;
@@ -297,6 +299,7 @@ sub fetch_p4_changes($$$$$$$$$) {
     }
 
     $slavepipe->print("progress All done; $chgcounter changes, $data_sent bytes\n");
+    $git_repo->command_noisy("config", "p4-remote.$p4_remote_name.changelist", $last_change->{id}) if ($git_repo);
 
     return $last_change && $last_change->{id};
 }
@@ -310,14 +313,6 @@ sub get_config_optional($$) {
     } catch Git::Error::Command with {
 	return undef;
     }
-}
-
-sub fetch_last_changelist($$$) {
-    my $git_repo = shift;
-    my $p4_remote_name = shift;
-    my $branch = shift;
-
-    return get_config_optional($git_repo, "branch.refs/remotes/$p4_remote_name/$branch.changelist");
 }
 
 sub get_current_branch($) {
@@ -414,13 +409,12 @@ if ($subcommand eq 'clone') {
 
     my $max_changes = $opts{m} || 0;
 
-    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, undef, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, [])
+    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, [], $git_repo)
 	or die "No changes found\n";
 
     if ($git_repo) {
 	my $master_branch = @branchspecs ? $branchspecs[0]->[1] : "master";
 	$git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
-	$git_repo->command_noisy("config", "p4-remote.$remotename.changelist", $last_change);
 	$git_repo->command_noisy("config", "branch.master.p4-remote", $remotename);
 	$git_repo->command_noisy("config", "branch.master.rebase", $master_branch);
 	$git_repo->command_noisy("branch", "master", "refs/remotes/$remotename/$master_branch");
@@ -493,10 +487,9 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     my @known_branches = map { $_->[1] } grep { $_->[1] =~ s|^refs/remotes/$remotename/|| } map { [split(/\s+/)] } split(/\n/, $git_repo->command("show-ref"));
     my %checkpoint_interval = ( bytes => $opts{B}, commits => $opts{C}, time => $opts{T} );
     my $max_changes = $opts{m} || 0;
-    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $git_repo->command_oneline("config", "p4-remote.$remotename.changelist"), $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, \@known_branches);
+    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, \@known_branches, $git_repo);
 
     $git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
-    $git_repo->command_noisy("config", "p4-remote.$remotename.changelist", $last_change) if ($last_change);
 
     if ($subcommand eq 'pull') {
 	if ($git_repo->command_oneline("config", "core.bare") eq 'false') {
