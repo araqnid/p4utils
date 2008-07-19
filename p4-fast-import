@@ -87,7 +87,7 @@ if ($subcommand eq 'clone') {
 	$p4link->git_repo->command_noisy("config", "branch.master.p4-remote", $remotename);
 	$p4link->git_repo->command_noisy("config", "branch.master.rebase", $master_branch);
 	$p4link->git_repo->command_noisy("branch", "master", "refs/remotes/$remotename/$master_branch");
-	$p4link->git_repo->command_noisy("checkout");
+	$p4link->git_repo->command_noisy("checkout") unless ($opts{n});
     }
 }
 elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
