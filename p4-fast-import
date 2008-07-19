@@ -111,37 +111,47 @@ sub decode_p4path($$$) {
     return (undef, $residual);
 }
 
-sub accumulate_changes($$$) {
+sub accumulate_changes($$$$) {
     my $p4base = shift;
     my $branchspecs = shift;
     my $since = shift;
-
-    my @paths;
-
-    if (!@$branchspecs) {
-	@paths = ($p4base);
-    }
-    else {
-	for (@$branchspecs) {
-	    my($subdir_pattern, $branch) = @$_;
-	    push @paths, map { $_->{dir} } p4_recv("dirs", "$p4base/$subdir_pattern");
-	}
-    }
+    my $fast = shift;
 
     my @p4changes;
-    for my $path (@paths) {
-	for my $p4change (p4_recv("changes", "-l", "-t", "$path/...".($since ? join("", '@', $since+1, ",#head") : ""))) {
+    if ($fast) {
+	for my $p4change (p4_recv("changes", "-l", "-t", "$p4base/...".($since ? join("", '@', $since+1, ",#head") : ""))) {
 	    my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0] || '';
 	    my $p4user_info = get_p4user($p4change->{user});
 	    push @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
+	}
+    }
+    else {
+	my @paths;
+
+	if (!@$branchspecs) {
+	    @paths = ($p4base);
+	}
+	else {
+	    for (@$branchspecs) {
+		my($subdir_pattern, $branch) = @$_;
+		push @paths, map { $_->{dir} } p4_recv("dirs", "$p4base/$subdir_pattern");
+	    }
+	}
+
+	for my $path (@paths) {
+	    for my $p4change (p4_recv("changes", "-l", "-t", "$path/...".($since ? join("", '@', $since+1, ",#head") : ""))) {
+		my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0] || '';
+		my $p4user_info = get_p4user($p4change->{user});
+		push @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
+	    }
 	}
     }
 
     return sort { $a->{id} <=> $b->{id} } @p4changes;
 }
 
-sub fetch_p4_changes($$$$$$$$$) {
-    my($slavepipe, $p4base, $p4_remote_name, $branchspecs, $max_changes, $checkpoint_interval, $tag_changelists, $known_branches, $git_repo) = @_;
+sub fetch_p4_changes($$$$$$$$$$) {
+    my($slavepipe, $p4base, $p4_remote_name, $branchspecs, $max_changes, $checkpoint_interval, $tag_changelists, $known_branches, $git_repo, $fast_scan) = @_;
     my $last_checkpoint = [time, 0, 0];
     my $data_sent = 0;
     my $chgcounter = 0;
@@ -149,7 +159,7 @@ sub fetch_p4_changes($$$$$$$$$) {
     my $since_changelist = $git_repo && get_config_optional($git_repo, "p4-remote.$p4_remote_name.changelist");
     $slavepipe->print("progress $p4base/...".($since_changelist ? " since \@$since_changelist":"")."\n");
 
-    my @p4changes = accumulate_changes($p4base, $branchspecs, $since_changelist);
+    my @p4changes = accumulate_changes($p4base, $branchspecs, $since_changelist, $fast_scan);
 
     my $last_change;
     my %seen_branch;
@@ -335,7 +345,7 @@ my $subcommand = shift;
 
 if ($subcommand eq 'clone') {
     my %opts;
-    getopts("o:d:m:nC:B:T:t", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] perforce-root-dir [branchspec...]\n";
+    getopts("o:d:m:nC:B:T:ts", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] [-s] perforce-root-dir [branchspec...]\n";
 
     my $p4base = shift;
     $p4base =~ s{/(\.\.\.)?$}{};
@@ -409,8 +419,9 @@ if ($subcommand eq 'clone') {
     my %checkpoint_interval = ( bytes => $opts{B}, commits => $opts{C}, time => $opts{T} );
 
     my $max_changes = $opts{m} || 0;
+    my $fast_scan = !$opts{s};
 
-    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, [], $git_repo)
+    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, [], $git_repo, $fast_scan)
 	or die "No changes found\n";
 
     if ($git_repo) {
@@ -488,7 +499,8 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     my @known_branches = map { $_->[1] } grep { $_->[1] =~ s|^refs/remotes/$remotename/|| } map { [split(/\s+/)] } split(/\n/, $git_repo->command("show-ref"));
     my %checkpoint_interval = ( bytes => $opts{B}, commits => $opts{C}, time => $opts{T} );
     my $max_changes = $opts{m} || 0;
-    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, \@known_branches, $git_repo);
+    my $fast_scan = !$opts{s} && get_config_optional($git_repo, "p4-remote.$remotename.fast-scan");
+    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, \@known_branches, $git_repo, $fast_scan);
 
     $git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
 
