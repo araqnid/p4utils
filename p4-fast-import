@@ -199,7 +199,8 @@ sub fetch_p4_changes($$$$$$$$$) {
 				# We should really try to pinpoint the exact commit this is based on... but how?
 				# We'd have to scan all the branch actions in this change to see which rev on the source branch they are taking,
 				# then find the earliest changelist on the source branch that does not change any files to beyond that source revision.
-				$slavepipe->print("from refs/remotes/$p4_remote_name/$source_branch\n");
+				# Maybe allow a way for the client to specify it instead?
+				$slavepipe->print("merge refs/remotes/$p4_remote_name/$source_branch\n");
 			    }
 			    else {
 				warn "P4 branch '$branch' not based on a known branch: $branch_from\n";
