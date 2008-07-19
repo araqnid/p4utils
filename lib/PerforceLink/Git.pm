@@ -169,7 +169,6 @@ sub fetch_p4_changes {
     my $data_sent = 0;
     my $chgcounter = 0;
 
-    my $since_changelist = $this->git_repo && $this->get_remote_config_optional("changelist");
     my($fast_import_ctx, $fast_import_pipe);
 
     my $last_change;
@@ -186,6 +185,23 @@ sub fetch_p4_changes {
 	close(GRAFTS);
     }
 
+    my $marksfile;
+    my $since_changelist;
+    if ($this->git_repo) {
+	my $marksdir = $this->git_repo->repo_path."/marks";
+	(-d $marksdir) || mkdir $marksdir, 0775 or die "Unable to create $marksdir: $!\n";
+	$marksfile = join("/", $marksdir, $this->remotename);
+	if (-f $marksfile) {
+	    open(MARKS, $marksfile) or die "Unable to read $marksfile: $!\n";
+	    while (<MARKS>) {
+		my($mark, $commit) = split(/\s+/);
+		$mark =~ /^:(\d+)/ or die "Invalid fast-import mark in $marksfile: $mark";
+		$since_changelist = $1;
+	    }
+	    close(MARKS);
+	}
+    }
+
     if ($this->output_file) {
 	if ($this->output_file ne '-') {
 	    open(OUTPUT, ">".$this->output_file) or die "Unable to write ".$this->output_file.": $!\n";
@@ -196,9 +212,6 @@ sub fetch_p4_changes {
 	croak "Must have a repository or an output file" unless ($this->git_repo);
 	my @cmd = ("fast-import");
 	push @cmd, "--quiet" unless ($this->debug);
-	my $marksdir = $this->git_repo->repo_path."/marks";
-	(-d $marksdir) || mkdir $marksdir, 0775 or die "Unable to create $marksdir: $!\n";
-	my $marksfile = join("/", $marksdir, $this->remotename);
 	push @cmd, "--export-marks=$marksfile";
 	push @cmd, "--import-marks=$marksfile" if (-f $marksfile);
 	($fast_import_pipe, $fast_import_ctx) = $this->git_repo->command_input_pipe(@cmd);
@@ -347,9 +360,6 @@ sub fetch_p4_changes {
 	    print "checkpoint\n";
 	    print "progress Checkpoint (".join(", ", sort keys %need_checkpoint).") \@$p4change->{id}\n";
 	    $last_checkpoint = [time, $chgcounter, $data_sent];
-	    unless ($this->output_file) {
-		$this->remote_config("changelist", $p4change->{id});
-	    }
 	}
 
 	$last_change = $p4change;
@@ -357,9 +367,6 @@ sub fetch_p4_changes {
     }
 
     print "progress All done; $chgcounter changes, $data_sent bytes\n";
-    if ($last_change && !$this->output_file) {
-	$this->remote_config("changelist", $last_change->{id});
-    }
 
     if ($fast_import_ctx) {
 	$this->git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
