@@ -95,7 +95,7 @@ sub decode_p4path($$$) {
 	my($subdir_pattern, $branch_pattern) = @$_;
 	my $input_re = $subdir_pattern;
 	$input_re =~ s{\*}{([^/]*)};
-	$input_re .= "/";
+	$input_re = "^$input_re/";
 
 	my $output_string = $branch_pattern;
 	my $index = 1;
