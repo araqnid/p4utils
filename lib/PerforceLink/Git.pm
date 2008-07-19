@@ -234,6 +234,7 @@ sub fetch_p4_changes {
 	my $commit_text = $p4change->{desc};
 	$commit_text = encode('utf-8', decode('iso-8859-1', $commit_text));
 	my $current_branch;
+	my $new_branch;
 
 	for (my $i = 0; exists $raw_changeinfo->{"action$i"}; $i++) {
 	    my($action, $file, $type, $rev) = map { $raw_changeinfo->{$_} } ("action$i", "depotFile$i", "type$i", "rev$i" );
@@ -254,6 +255,13 @@ sub fetch_p4_changes {
 	    print "# $action $file#$rev (-> $branch)\n";
 
 	    if (!$current_branch || $branch ne $current_branch) {
+		if ($new_branch) {
+		    print "reset refs/tags/".$this->remotename."/$new_branch/root\n";
+		    print "from :$p4change->{id}\n";
+		    print "\n";
+		    undef $new_branch;
+		}
+
 		print "commit refs/remotes/".$this->remotename."/$branch\n";
 		print "mark :$p4change->{id}\n";
 		print "committer $p4change->{user}->{FullName} <$p4change->{user}->{Email}> $p4change->{time} +0000\n";
@@ -266,6 +274,7 @@ sub fetch_p4_changes {
 		    }
 		    elsif ($branch_grafts{$branch}) {
 			print "merge :$branch_grafts{$branch}\n";
+			$new_branch = $branch;
 		    }
 		    else {
 			if ($action eq 'branch') {
@@ -286,6 +295,7 @@ sub fetch_p4_changes {
 			    warn "P4 branch '$branch' not started with a branch submission\n" unless (!@known_branches);
 			}
 			$branch_exists{$branch} = 1;
+			$new_branch = $branch;
 		    }
 		}
 		$current_branch = $branch;
@@ -349,6 +359,12 @@ sub fetch_p4_changes {
 		print "\n";
 		$data_sent += $file_size;
 	    }
+	}
+
+	if ($new_branch) {
+	    print "reset refs/tags/".$this->remotename."/$new_branch/root\n";
+	    print "from :$p4change->{id}\n";
+	    print "\n";
 	}
 
 	if ($this->tag_changelists) {
