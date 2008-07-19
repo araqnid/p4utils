@@ -3,12 +3,13 @@ use ExtUtils::MakeMaker;
 use utf8;
 
 WriteMakefile(
-    NAME => "Git::P4Link",
+    NAME => "PerforceLink",
     EXE_FILES => [qw|p4-fast-import unmarshal|],
     PREREQ_PM => {
 	Git => undef,
 	IO::Wrap => undef,
 	Carp => undef,
-	Encode => undef
+	Encode => undef,
+	Class::Accessor => undef
     }
     );

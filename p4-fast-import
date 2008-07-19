@@ -5,342 +5,18 @@ use strict;
 use warnings;
 use utf8;
 use Getopt::Std;
-use IO::Pipe;
-use IO::File;
-use IO::Wrap;
-use Git;
-use Error qw(:try);
-use Data::Dumper;
-use Cwd qw(abs_path);
-use Encode;
 use PerforceLink qw(:p4);
-# p4 help filetypes
-use constant FILETYPE_ALIASES => {
-    "ctext" => ["text", "C"],
-    "cxtext" => ["text", "Cx"],
-    "ktext" => ["text", "k"],
-    "kxtext" => ["text", "kx"],
-    "ltext" => ["text", "F"],
-    "tempobj" => ["binary", "Sw"],
-    "ubinary" => ["binary", "F"],
-    "uresource" => ["resource", "F"],
-    "uxbinary" => ["binary", "Fx"],
-    "xbinary" => ["binary", "x"],
-    "xltext" => ["text", "Fx"],
-    "xtempobj" => ["binary", "Swx"],
-    "xtext" => ["text", "x"],
-    "xunicode" => ["unicode", "x"],
-    "xutf16" => ["utf16", "x"],
-};
-
-sub get_p4user($) {
-    my $userid = shift;
-    our %usertab;
-    if (!%usertab) {
-	for (p4_recv("users")) {
-	    $usertab{$_->{User}} = $_;
-	}
-    }
-    return $usertab{$userid} || { User => $userid, Email => $userid, FullName => $userid };
-}
-
-sub decode_p4_filetype($) {
-    my $filetype = shift;
-    my $aliased = FILETYPE_ALIASES->{$filetype};
-    return @$aliased if ($aliased);
-    my($basetype, $mods) = split(/\+/, $filetype, 2);
-    $mods ||= '';
-    return ($basetype, $mods);
-}
+use Cwd qw(abs_path);
+use PerforceLink::Git;
 
 sub validate_p4_base($) {
     my $dir = shift;
     p4_recv("dirs", $dir) or die "Perforce base directory does not exist: $dir\n";
 }
 
-sub convertpath($$$) {
-    my $dirname = shift;
-    my $input_pattern = shift;
-    my $output_pattern = shift;
-
-    # Trivial cases
-    return $output_pattern if ($input_pattern !~ /\*/ && $input_pattern eq $dirname);
-    return $dirname if ($input_pattern eq $output_pattern);
-
-    my $input_re = $input_pattern;
-    $input_re =~ s{\*}{(.*)};
-
-    my $output_string = $output_pattern;
-    my $index = 1;
-    $output_string =~ s{\*}{"\$".($index++)}ge;
-
-    eval "\$dirname =~ s{$input_re}{$output_string}";
-
-    return $dirname;
-}
-
-sub decode_p4path($$$) {
-    my $p4path = shift;
-    my $p4base = shift;
-    my $branchspecs = shift;
-
-    # Ignore files outside our base completely
-    return if (length($p4path) < length($p4base) || substr($p4path, 0, length($p4base)) ne $p4base);
-
-    my $residual = substr($p4path, length($p4base) + 1);
-
-    return ("master", $residual) if (!@$branchspecs);
-
-    for (@$branchspecs) {
-	my($subdir_pattern, $branch_pattern) = @$_;
-	my $input_re = $subdir_pattern;
-	$input_re =~ s{\*}{([^/]*)};
-	$input_re = "^$input_re/";
-
-	my $output_string = $branch_pattern;
-	my $index = 1;
-	$output_string =~ s{\*}{"\$".($index++)}ge;
-
-	if ($residual =~ s{$input_re}{}) {
-	    $output_string = eval "qq{$output_string}";
-	    return ($output_string, $residual);
-	    die Data::Dumper->new([$residual, $subdir_pattern, $branch_pattern, $input_re, $output_string], [qw|residual subdir_pattern branch_patern input_re output_string|])->Dump;
-	}
-    }
-
-    return (undef, $residual);
-}
-
-sub accumulate_changes($$$$) {
-    my $p4base = shift;
-    my $branchspecs = shift;
-    my $since = shift;
-    my $fast = shift;
-
-    my @p4changes;
-    if ($fast) {
-	for my $p4change (p4_recv("changes", "-l", "-t", "$p4base/...".($since ? join("", '@', $since+1, ",#head") : ""))) {
-	    my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0] || '';
-	    my $p4user_info = get_p4user($p4change->{user});
-	    push @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
-	}
-    }
-    else {
-	my @paths;
-
-	if (!@$branchspecs) {
-	    @paths = ($p4base);
-	}
-	else {
-	    for (@$branchspecs) {
-		my($subdir_pattern, $branch) = @$_;
-		push @paths, map { $_->{dir} } p4_recv("dirs", "$p4base/$subdir_pattern");
-	    }
-	}
-
-	for my $path (@paths) {
-	    for my $p4change (p4_recv("changes", "-l", "-t", "$path/...".($since ? join("", '@', $since+1, ",#head") : ""))) {
-		my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0] || '';
-		my $p4user_info = get_p4user($p4change->{user});
-		push @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
-	    }
-	}
-    }
-
-    return sort { $a->{id} <=> $b->{id} } @p4changes;
-}
-
-sub fetch_p4_changes($$$$$$$$$$) {
-    my($slavepipe, $p4base, $p4_remote_name, $branchspecs, $max_changes, $checkpoint_interval, $tag_changelists, $known_branches, $git_repo, $fast_scan) = @_;
-    my $last_checkpoint = [time, 0, 0];
-    my $data_sent = 0;
-    my $chgcounter = 0;
-
-    my $since_changelist = $git_repo && get_config_optional($git_repo, "p4-remote.$p4_remote_name.changelist");
-    $slavepipe->print("progress $p4base/...".($since_changelist ? " since \@$since_changelist":"")."\n");
-
-    my @p4changes = accumulate_changes($p4base, $branchspecs, $since_changelist, $fast_scan);
-
-    my $last_change;
-    my %seen_branch;
-    my %branch_exists = map { ($_, 1) } @$known_branches;
-    for my $p4change (@p4changes) {
-	$slavepipe->print("progress $p4change->{id} - $p4change->{user}->{User} - $p4change->{subject}\n");
-	my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
-	my $commit_text = $p4change->{desc};
-	$commit_text = encode('utf-8', decode('iso-8859-1', $commit_text));
-	my $current_branch;
-
-	for (my $i = 0; exists $raw_changeinfo->{"action$i"}; $i++) {
-	    my($action, $file, $type, $rev) = map { $raw_changeinfo->{$_} } ("action$i", "depotFile$i", "type$i", "rev$i" );
-	    my($basetype, $typemods) = decode_p4_filetype($type);
-
-	    my($branch, $git_path) = decode_p4path($file, $p4base, $branchspecs);
-
-	    unless ($git_path) {
-		$slavepipe->print("# $action $file#$rev (outside)\n");
-		next;
-	    }
-
-	    unless ($branch) {
-		$slavepipe->print("# $action $file#$rev (not mapped)\n");
-		next;
-	    }
-
-	    $slavepipe->print("# $action $file#$rev (-> $branch)\n");
-
-	    if (!$current_branch || $branch ne $current_branch) {
-		$slavepipe->print("commit refs/remotes/$p4_remote_name/$branch\n");
-		$slavepipe->print("mark :$p4change->{id}\n");
-		$slavepipe->print("committer $p4change->{user}->{FullName} <$p4change->{user}->{Email}> $p4change->{time} +0000\n");
-		$slavepipe->print("data ".length($commit_text)."\n");
-		$slavepipe->print("$commit_text\n");
-		if (!$seen_branch{$branch}) {
-		    $seen_branch{$branch} = 1;
-		    if ($branch_exists{$branch}) {
-			$slavepipe->print("from refs/remotes/$p4_remote_name/$branch^0\n");
-		    }
-		    else {
-			if ($action eq 'branch') {
-			    my($branch_action_info) = p4_recv("filelog", "$file#$rev");
-			    my $branch_from = $branch_action_info->{'file0,0'}; # FIXME
-			    my($source_branch, $source_path) = decode_p4path($branch_from, $p4base, $branchspecs);
-			    if ($source_branch) {
-				# We should really try to pinpoint the exact commit this is based on... but how?
-				# We'd have to scan all the branch actions in this change to see which rev on the source branch they are taking,
-				# then find the earliest changelist on the source branch that does not change any files to beyond that source revision.
-				# Maybe allow a way for the client to specify it instead?
-				$slavepipe->print("merge refs/remotes/$p4_remote_name/$source_branch\n");
-			    }
-			    else {
-				warn "P4 branch '$branch' not based on a known branch: $branch_from\n";
-			    }
-			}
-			else {
-			    warn "P4 branch '$branch' not started with a branch submission\n" unless (!@$known_branches);
-			}
-			$branch_exists{$branch} = 1;
-		    }
-		}
-		$current_branch = $branch;
-	    }
-
-	    if ($action eq 'delete' || $action eq 'purge') {
-		$slavepipe->print("D $git_path\n");
-	    }
-	    else {
-		my $tmpfilename = ($ENV{TMPDIR} || "/tmp")."/p4fi".sprintf("%x%x%x", rand() * 0x10000, $$, time);
-		sysopen(DATA, $tmpfilename, O_WRONLY|O_EXCL|O_CREAT, 0600) or die "Unable to write $tmpfilename: $!\n";
-		my $filterpipe = ($basetype eq 'text' && $typemods =~ /k/) && IO::Pipe->new;
-		my $printpid = fork;
-		die "Cannot fork: $!\n" unless (defined $printpid);
-		if ($printpid == 0) {
-		    if ($filterpipe) {
-			$filterpipe->writer;
-			open(STDOUT, ">&=".$filterpipe->fileno) or die "Unable to redirect stdout: $!\n";
-		    }
-		    else {
-			open(STDOUT, ">&=".(fileno DATA)) or die "Unable to redirect stdout: $!\n";
-		    }
-		    exec "p4", "print", "-q", "$file#$rev" or die "Unable to exec p4 print: $!\n";
-		}
-		if ($filterpipe) {
-		    my $restricted = $typemods =~ /k(o?)/ && $1 eq 'o';
-		    $filterpipe->reader;
-		    my $changes = 0;
-		    my $lines = 0;
-		    while (<$filterpipe>) {
-			++$lines;
-			s{\$Id: \S+\#\d+ \$}{\$Id\$}g && ++$changes;
-			s{\$Header: [^\$]+ \$}{\$Header\$}g && ++$changes;
-			s{\$(Author|Date|DateTime|Change|File|Revision): [^\$]+ \$}{\$$1\$}g && ++$changes
-			    unless ($restricted);
-			print DATA;
-		    }
-		    $filterpipe->close;
-		}
-		waitpid($printpid, 0) or die "Unable to wait for $printpid: $!\n";
-		my $printstatus = $?;
-		$printstatus == 0 or die "p4 print exited: ".PerforceLink::decode_exitstatus($printstatus)."\n";
-		close(DATA);
-
-		my $file_size = -s $tmpfilename;
-		my $mode = ($typemods =~ /x/) ? "100755" : "100644";
-		$slavepipe->print("M $mode inline $git_path\n");
-		$slavepipe->print("data $file_size\n");
-		open(DATA, $tmpfilename) or die "Unable to read temporary file: $!\n";
-		my $remain = $file_size;
-		my $got = 0;
-		my $buf;
-		while (($got = sysread(DATA, $buf, 16384)) > 0) {
-		    $remain -= $got;
-		    $slavepipe->print($buf);
-		}
-		if ($remain != 0) {
-		    die "Lost $remain bytes when reading temp file\n";
-		}
-		unlink $tmpfilename;
-		$slavepipe->print("\n");
-		$data_sent += $file_size;
-	    }
-	}
-
-	if ($tag_changelists) {
-	    $slavepipe->print("reset refs/tags/$p4_remote_name/$p4change->{id}\n");
-	    $slavepipe->print("from :$p4change->{id}\n");
-	    $slavepipe->print("\n");
-	}
-
-	++$chgcounter;
-
-	my %need_checkpoint;
-	$need_checkpoint{time} = 1 if ($checkpoint_interval->{time} && time > ($last_checkpoint->[0]+$checkpoint_interval->{time}));
-	$need_checkpoint{commits} = 1 if ($checkpoint_interval->{commits} && $chgcounter > ($last_checkpoint->[1]+$checkpoint_interval->{commits}));
-	$need_checkpoint{bytes} = 1 if ($checkpoint_interval->{bytes} && $data_sent > ($last_checkpoint->[2]+$checkpoint_interval->{bytes}));
-
-	if (keys %need_checkpoint) {
-	    $slavepipe->print("checkpoint\n");
-	    $slavepipe->print("progress Checkpoint: ".join(", ", sort keys %need_checkpoint).": $chgcounter/".scalar @p4changes."\n");
-	    $last_checkpoint = [time, $chgcounter, $data_sent];
-	    $git_repo->command_noisy("config", "p4-remote.$p4_remote_name.changelist", $p4change->{id}) if ($git_repo);
-	}
-
-	$last_change = $p4change;
-	last if ($max_changes > 0 && $chgcounter >= $max_changes);
-    }
-
-    $slavepipe->print("progress All done; $chgcounter changes, $data_sent bytes\n");
-    $git_repo->command_noisy("config", "p4-remote.$p4_remote_name.changelist", $last_change->{id}) if ($git_repo);
-
-    return $last_change && $last_change->{id};
-}
-
-sub get_config_optional($$) {
-    my $git_repo = shift;
-    my $key = shift;
-
-    try {
-	return $git_repo->command_oneline("config", "--get", $key);
-    } catch Git::Error::Command with {
-	return undef;
-    }
-}
-
-sub get_current_branch($) {
-    my $git_repo = shift;
-    try {
-	my $head_ref = $git_repo->command_oneline("symbolic-ref", "HEAD");
-	return $head_ref =~ m|^refs/heads/(.+)| && $1;
-    } catch Git::Error::Command with {
-	# e.g. detached head
-	return undef;
-    }
-}
-
 my %globalopts;
 getopts('dr:', \%globalopts) && @ARGV >= 1 or die "Syntax: $0 [-d] subcommand [args...]\n";
 $PerforceLink::DEBUG = 1 if ($globalopts{d});
-my $remotename = $globalopts{r} || 'p4';
 my $subcommand = shift;
 
 if ($subcommand eq 'clone') {
@@ -351,15 +27,20 @@ if ($subcommand eq 'clone') {
     $p4base =~ s{/(\.\.\.)?$}{};
     validate_p4_base($p4base);
 
-    my $git_repo_dir = $opts{d};
-    my $git_repo;
-    if (!$git_repo_dir) {
-	($git_repo_dir = $p4base) =~ s|.*/||;
-	$git_repo_dir .= ".git" if ($opts{n});
-	$git_repo_dir = abs_path($git_repo_dir);
+    my $remotename = $globalopts{r} || 'p4';
+
+    my $p4link;
+    if ($opts{o}) {
+	$p4link = PerforceLink::Git->new(output_file => $opts{o}, p4base => $p4base, remotename => $remotename);
     }
-    if (!$opts{o}) {
-	die "GIT repo directory must be given if -o is not given\n" unless ($git_repo_dir);
+    else {
+	my $git_repo_dir = $opts{d};
+	if (!$git_repo_dir) {
+	    ($git_repo_dir = $p4base) =~ s|.*/||;
+	    $git_repo_dir .= ".git" if ($opts{n});
+	    $git_repo_dir = abs_path($git_repo_dir);
+	}
+
 	if (! -d $git_repo_dir) {
 	    mkdir $git_repo_dir, 0775 or die "Unable to create $git_repo_dir: $!\n";
 	    my $initpid = fork;
@@ -377,13 +58,16 @@ if ($subcommand eq 'clone') {
 	    my $initstatus = $?;
 	    $initstatus == 0 or die "git init exited: ".PerforceLink::decode_exitstatus($initstatus)."\n";
 	}
-	$git_repo = Git->repository(Directory => $git_repo_dir);
-    }
-    elsif ($opts{d}) {
-	die "GIT repo directory must not be given if -o is given\n";
+	$p4link = PerforceLink::Git->new(repo_dir => $git_repo_dir, p4base => $p4base, remotename => $remotename);
     }
 
-    my $tag_changelists = $opts{t};
+    $p4link->p4base($p4base);
+    $p4link->tag_changelists($opts{t});
+    $p4link->fast_scan(!$opts{s});
+    $p4link->checkpoint_bytes($opts{B});
+    $p4link->checkpoint_commits($opts{C});
+    $p4link->checkpoint_interval($opts{T});
+    $p4link->max_changes($opts{m});
     my @branchspecs;
     for (@ARGV) {
 	m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
@@ -392,141 +76,88 @@ if ($subcommand eq 'clone') {
 	push @branchspecs, [$subdir_pattern, $branch_pattern];
     }
 
-    if ($git_repo) {
-	$git_repo->command_noisy("config", "p4-remote.$remotename.base", $p4base);
-	$git_repo->command_noisy("config", "p4-remote.$remotename.tag-changelists", $opts{t} ? "true" : "false");
-	for my $envvar (qw|P4PORT P4USER P4CLIENT|) {
-	    $git_repo->command_noisy("config", "p4-remote.$remotename.\L$envvar", $ENV{$envvar}) if ($ENV{$envvar});
-	}
-	for my $spec (@branchspecs) {
-	    $git_repo->command_noisy("config", "--add", "p4-remote.$remotename.fetch", $spec->[0] eq $spec->[1] ? $spec->[0] : "$spec->[0]:$spec->[1]");
-	}
-    }
+    $p4link->branchspecs(\@branchspecs);
 
-    my($fast_import_pipe, $fast_import_ctx);
-    if ($git_repo) {
-	($fast_import_pipe, $fast_import_ctx) = $git_repo->command_input_pipe("fast-import", $globalopts{d} ? () : ("--quiet"));
-    }
-    else {
-	if ($opts{o} eq '-') {
-	    $fast_import_pipe = wraphandle(\*STDOUT);
-	}
-	else {
-	    $fast_import_pipe = IO::File->new(">$opts{o}") or die "Can't write $opts{o}: $!\n";
-	}
-    }
+    $p4link->save_config;
 
-    my %checkpoint_interval = ( bytes => $opts{B}, commits => $opts{C}, time => $opts{T} );
+    my $last_change = $p4link->fetch_p4_changes() or die "No changes found\n";
 
-    my $max_changes = $opts{m} || 0;
-    my $fast_scan = !$opts{s};
-
-    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, [], $git_repo, $fast_scan)
-	or die "No changes found\n";
-
-    if ($git_repo) {
+    if ($p4link->git_repo) {
 	my $master_branch = @branchspecs ? $branchspecs[0]->[1] : "master";
-	$git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
-	$git_repo->command_noisy("config", "branch.master.p4-remote", $remotename);
-	$git_repo->command_noisy("config", "branch.master.rebase", $master_branch);
-	$git_repo->command_noisy("branch", "master", "refs/remotes/$remotename/$master_branch");
-	$git_repo->command_noisy("checkout");
+	$p4link->git_repo->command_noisy("config", "branch.master.p4-remote", $remotename);
+	$p4link->git_repo->command_noisy("config", "branch.master.rebase", $master_branch);
+	$p4link->git_repo->command_noisy("branch", "master", "refs/remotes/$remotename/$master_branch");
+	$p4link->git_repo->command_noisy("checkout");
     }
 }
 elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     my %opts;
-    getopts("o:d:m:nC:B:T:", \%opts) or die "Syntax: $0 fetch [-d git-repo] [-m max-changes] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval]\n";
+    getopts("o:d:m:nC:B:T:", \%opts) or die "Syntax: $0 fetch [-d git-repo] [-o output] [-m max-changes] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval]\n";
 
-    my $git_repo_dir = $opts{d};
-    my $git_repo = Git->repository(Directory => ($git_repo_dir && abs_path($git_repo_dir)));
+    my $p4link = PerforceLink::Git->new(repo_dir => ($opts{d} || '.'), output_file => $opts{o});
 
-    # If pulling, glean the remote name from the branch config if possible
-    if (!$globalopts{r} && $subcommand eq 'pull' && $git_repo->command_oneline("config", "core.bare") eq 'false') {
-	my $current_branch = get_current_branch($git_repo);
+    if (!$globalopts{r} && $subcommand eq 'pull') {
+	my $current_branch = $p4link->get_current_branch();
 	if ($current_branch) {
-	    my $branch_remote = get_config_optional($git_repo, "branch.$current_branch.p4-remote");
+	    my $branch_remote = $p4link->get_config_optional("branch.$current_branch.p4-remote");
 	    if ($branch_remote) {
-		$remotename = $branch_remote;
+		$p4link->remotename($branch_remote);
 	    }
 	}
     }
-
-    for my $envvar (qw|P4PORT P4USER P4CLIENT|) {
-	my $value = get_config_optional($git_repo, lc($envvar));
-	$ENV{$envvar} ||= $value if ($value);
+    elsif ($globalopts{r}) {
+	$p4link->remotename($globalopts{r});
+    }
+    else {
+	$p4link->remotename('p4');
     }
 
-    my $tag_changelists = get_config_optional($git_repo, "p4-remote.$remotename.tag-changelists");
-    $tag_changelists = !defined($tag_changelists) ? 1 : $tag_changelists eq 'true';
+    $p4link->load_config;
 
-    my $p4base;
-    my @branchspecs;
+    $p4link->tag_changelists(1) if ($opts{t});
+    $p4link->fast_scan(0) if ($opts{s});
+    $p4link->checkpoint_bytes($opts{B}) if (defined($opts{B}));
+    $p4link->checkpoint_commits($opts{C}) if (defined($opts{C}));
+    $p4link->checkpoint_interval($opts{T}) if (defined($opts{T}));
+    $p4link->max_changes($opts{m});
+
     if (@ARGV) {
-	$p4base = shift;
+	$p4link->p4base(scalar shift);
+	my @branchspecs;
 	for (@ARGV) {
 	    m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
 	    my($subdir_pattern, $branch_pattern) = ($1, $2);
 	    $branch_pattern ||= $subdir_pattern;
 	    push @branchspecs, [$subdir_pattern, $branch_pattern];
 	}
-    }
-    else {
-	$p4base = $git_repo->command_oneline("config", "p4-remote.$remotename.base");
-	try {
-	    for (split(/\n/, $git_repo->command("config", "--get-all", "p4-remote.$remotename.fetch"))) {
-		m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
-		my($subdir_pattern, $branch_pattern) = ($1, $2);
-		$branch_pattern ||= $subdir_pattern;
-		push @branchspecs, [$subdir_pattern, $branch_pattern];
-	    }
-	} catch Git::Error::Command with {
-	};
+	$p4link->branchspecs(\@branchspecs);
     }
 
-    my($fast_import_pipe, $fast_import_ctx);
-    if ($git_repo) {
-	($fast_import_pipe, $fast_import_ctx) = $git_repo->command_input_pipe("fast-import", $globalopts{d} ? () : ("--quiet"));
-    }
-    else {
-	if ($opts{o} eq '-') {
-	    $fast_import_pipe = wraphandle(\*STDOUT);
-	}
-	else {
-	    $fast_import_pipe = IO::File->new(">$opts{o}") or die "Can't write $opts{o}: $!\n";
-	}
-    }
-
-    my @known_branches = map { $_->[1] } grep { $_->[1] =~ s|^refs/remotes/$remotename/|| } map { [split(/\s+/)] } split(/\n/, $git_repo->command("show-ref"));
-    my %checkpoint_interval = ( bytes => $opts{B}, commits => $opts{C}, time => $opts{T} );
-    my $max_changes = $opts{m} || 0;
-    my $fast_scan = !$opts{s} && get_config_optional($git_repo, "p4-remote.$remotename.fast-scan");
-    my $last_change = fetch_p4_changes($fast_import_pipe, $p4base, $remotename, \@branchspecs, $max_changes, \%checkpoint_interval, $tag_changelists, \@known_branches, $git_repo, $fast_scan);
-
-    $git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
+    my $last_change = $p4link->fetch_p4_changes();
 
     if ($subcommand eq 'pull') {
-	if ($git_repo->command_oneline("config", "core.bare") eq 'false') {
-	    my $current_branch = get_current_branch($git_repo);
+	if ($p4link->git_repo->command_oneline("config", "core.bare") eq 'false') {
+	    my $current_branch = $p4link->get_current_branch();
 	    if (!$current_branch) {
 		warn "You don't appear to be on a branch head for merging.\n";
 	    }
 	    else {
-		my $branch_remote = get_config_optional($git_repo, "branch.$current_branch.p4-remote");
+		my $branch_remote = $p4link->get_config_optional("branch.$current_branch.p4-remote");
 		if (!$branch_remote) {
 		    warn "Branch '$current_branch' does not have a p4-remote configured\n";
 		}
-		elsif ($branch_remote ne $remotename) {
+		elsif ($branch_remote ne $p4link->remotename) {
 		    # Actually, we should decide which remote we are using based on the current branch.
 		    warn "Branch '$current_branch' is configured for remote '$branch_remote'\n";
 		}
 		else {
-		    my $rebase_p4branch = get_config_optional($git_repo, "branch.$current_branch.rebase");
-		    my $merge_p4branch = get_config_optional($git_repo, "branch.$current_branch.merge");
+		    my $rebase_p4branch = $p4link->get_config_optional("branch.$current_branch.rebase");
+		    my $merge_p4branch = $p4link->get_config_optional("branch.$current_branch.merge");
 		    if ($merge_p4branch) {
-			$git_repo->command_noisy("merge", "refs/remotes/$remotename/$merge_p4branch");
+			$p4link->git_repo->command_noisy("merge", "refs/remotes/".$p4link->remotename."/$merge_p4branch");
 		    }
 		    elsif ($rebase_p4branch) {
-			$git_repo->command_noisy("rebase", "refs/remotes/$remotename/$rebase_p4branch");
+			$p4link->git_repo->command_noisy("rebase", "refs/remotes/".$p4link->remotename."/$rebase_p4branch");
 		    }
 		    else {
 			warn "Branch '$current_branch' does not have a configuration of which p4 branch to merge or rebase from\n";
