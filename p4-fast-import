@@ -21,7 +21,7 @@ my $subcommand = shift;
 
 if ($subcommand eq 'clone') {
     my %opts;
-    getopts("o:d:m:nC:B:T:ts", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] [-s] perforce-root-dir [branchspec...]\n";
+    getopts("o:d:m:nC:B:T:tsg:", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] [-s] [-g graft-file] perforce-root-dir [branchspec...]\n";
 
     my $p4base = shift;
     $p4base =~ s{/(\.\.\.)?$}{};
@@ -68,6 +68,7 @@ if ($subcommand eq 'clone') {
     $p4link->checkpoint_commits($opts{C});
     $p4link->checkpoint_interval($opts{T});
     $p4link->max_changes($opts{m});
+    $p4link->grafts($opts{g});
     my @branchspecs;
     for (@ARGV) {
 	m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
@@ -92,7 +93,7 @@ if ($subcommand eq 'clone') {
 }
 elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     my %opts;
-    getopts("o:d:m:nC:B:T:", \%opts) or die "Syntax: $0 fetch [-d git-repo] [-o output] [-m max-changes] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval]\n";
+    getopts("o:d:m:nC:B:T:g:", \%opts) or die "Syntax: $0 fetch [-d git-repo] [-o output] [-m max-changes] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval]\n";
 
     $opts{o} && $subcommand eq 'pull' and die "Cannot specify an output file with 'pull'\n";
     my $p4link = PerforceLink::Git->new(repo_dir => ($opts{d} || '.'), output_file => $opts{o});
@@ -121,6 +122,7 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     $p4link->checkpoint_commits($opts{C}) if (defined($opts{C}));
     $p4link->checkpoint_interval($opts{T}) if (defined($opts{T}));
     $p4link->max_changes($opts{m});
+    $p4link->grafts($opts{g});
 
     if (@ARGV) {
 	$p4link->p4base(scalar shift);

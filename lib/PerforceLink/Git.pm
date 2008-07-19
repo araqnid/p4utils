@@ -31,7 +31,7 @@ use constant FILETYPE_ALIASES => {
     "xutf16" => ["utf16", "x"],
 };
 use base qw(Class::Accessor);
-__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes));
+__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts));
 
 sub new {
     my $pkg = shift;
@@ -176,6 +176,15 @@ sub fetch_p4_changes {
     my %seen_branch;
     my @known_branches = $this->known_branches;
     my %branch_exists = map { ($_, 1) } @known_branches;
+    my %branch_grafts;
+    if ($this->grafts) {
+	open(GRAFTS, $this->grafts) or die "Unable to read ".$this->grafts.": $!\n";
+	while (<GRAFTS>) {
+	    my($branch, $changelist) = split(/\s+/);
+	    $branch_grafts{$branch} = $changelist;
+	}
+	close(GRAFTS);
+    }
 
     if ($this->output_file) {
 	if ($this->output_file ne '-') {
@@ -234,6 +243,9 @@ sub fetch_p4_changes {
 		    if ($branch_exists{$branch}) {
 			print "from refs/remotes/".$this->remotename."/$branch^0\n";
 		    }
+		    elsif ($branch_grafts{$branch}) {
+			print "merge :$branch_grafts{$branch}\n";
+		    }
 		    else {
 			if ($action eq 'branch') {
 			    my($branch_action_info) = p4_recv("filelog", "$file#$rev");
@@ -243,7 +255,6 @@ sub fetch_p4_changes {
 				# We should really try to pinpoint the exact commit this is based on... but how?
 				# We'd have to scan all the branch actions in this change to see which rev on the source branch they are taking,
 				# then find the earliest changelist on the source branch that does not change any files to beyond that source revision.
-				# Maybe allow a way for the client to specify it instead?
 				print "merge refs/remotes/".$this->remotename."/$source_branch\n";
 			    }
 			    else {
