@@ -94,6 +94,7 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     my %opts;
     getopts("o:d:m:nC:B:T:", \%opts) or die "Syntax: $0 fetch [-d git-repo] [-o output] [-m max-changes] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval]\n";
 
+    $opts{o} && $subcommand eq 'pull' and die "Cannot specify an output file with 'pull'\n";
     my $p4link = PerforceLink::Git->new(repo_dir => ($opts{d} || '.'), output_file => $opts{o});
 
     if (!$globalopts{r} && $subcommand eq 'pull') {
