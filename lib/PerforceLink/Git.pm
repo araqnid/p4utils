@@ -279,7 +279,14 @@ sub fetch_p4_changes {
 		    else {
 			if ($action eq 'branch') {
 			    my($branch_action_info) = p4_recv("filelog", "$file#$rev");
-			    my $branch_from = $branch_action_info->{'file0,0'}; # FIXME
+			    my $branch_from;
+			    for (my $i = 0; exists $branch_action_info->{"how0,$i"}; ++$i) {
+				if ($branch_action_info->{"how0,$i"} eq "branch from") {
+				    $branch_from = $branch_action_info->{"file0,$i"};
+				    last;
+				}
+			    }
+			    die "P4 branch '$branch' not created by branching\n" unless ($branch_from);
 			    my($source_branch, $source_path) = $this->decode_p4path($branch_from);
 			    if ($source_branch) {
 				# We should really try to pinpoint the exact commit this is based on... but how?
