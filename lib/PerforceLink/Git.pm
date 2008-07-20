@@ -288,11 +288,11 @@ sub fetch_p4_changes {
 				print "merge refs/remotes/".$this->remotename."/$source_branch\n";
 			    }
 			    else {
-				warn "P4 branch '$branch' not based on a known branch: $branch_from\n";
+				die "P4 branch '$branch' not based on a known branch: $branch_from\n";
 			    }
 			}
 			else {
-			    warn "P4 branch '$branch' not started with a branch submission\n" unless (!@known_branches);
+			    die "P4 branch '$branch' not started with a branch submission\n" unless (!@known_branches);
 			}
 			$branch_exists{$branch} = 1;
 			$new_branch = $branch;
