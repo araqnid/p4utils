@@ -21,7 +21,7 @@ my $subcommand = shift;
 
 if ($subcommand eq 'clone') {
     my %opts;
-    getopts("o:d:m:nC:B:T:tsg:", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] [-s] [-g graft-file] perforce-root-dir [branchspec...]\n";
+    getopts("o:d:m:nC:B:T:tsg:e:", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] [-s] [-g graft-file] [-e p4-change-charset] perforce-root-dir [branchspec...]\n";
 
     my $p4base = shift;
     $p4base =~ s{/(\.\.\.)?$}{};
@@ -69,6 +69,7 @@ if ($subcommand eq 'clone') {
     $p4link->checkpoint_interval($opts{T});
     $p4link->max_changes($opts{m});
     $p4link->grafts($opts{g});
+    $p4link->change_charset($opts{e});
     my @branchspecs;
     for (@ARGV) {
 	m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";

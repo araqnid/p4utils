@@ -31,7 +31,7 @@ use constant FILETYPE_ALIASES => {
     "xutf16" => ["utf16", "x"],
 };
 use base qw(Class::Accessor);
-__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts));
+__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts change_charset));
 
 sub new {
     my $pkg = shift;
@@ -153,7 +153,7 @@ sub accumulate_changes {
     return sort { $a->{id} <=> $b->{id} } map {
 	{ user => get_p4user($_->{user}),
 	  id => $_->{change},
-	  subject => ([split(/\n/, $_->{desc})]->[0] || ''),
+	  subject => ([grep { $_ ne '' } split(/\n/, $this->to_utf8($_->{desc}))]->[0] || ''),
 	  desc => $_->{desc},
 	  time => $_->{time} } } @p4changes;
 }
@@ -231,8 +231,7 @@ sub fetch_p4_changes {
     for my $p4change ($this->accumulate_changes($since_changelist)) {
 	print "progress $p4change->{id} - $p4change->{user}->{User} - $p4change->{subject}\n";
 	my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
-	my $commit_text = $p4change->{desc};
-	$commit_text = encode('utf-8', decode('iso-8859-1', $commit_text));
+	my $commit_text = $this->to_utf8($p4change->{desc});
 	my $current_branch;
 	my $new_branch;
 
@@ -500,6 +499,7 @@ sub save_config {
 	$this->remote_config(lc($envvar), $ENV{$envvar}) if ($ENV{$envvar});
     }
     $this->set_remote_config_collection("fetch", map { $_->[0] eq $_->[1] ? $_->[0] : "$_->[0]:$_->[1]" } @{$this->branchspecs});
+    $this->remote_config("change-charset", $this->change_charset) if ($this->change_charset);
 }
 
 sub load_config {
@@ -513,6 +513,18 @@ sub load_config {
 	$ENV{$envvar} ||= $value if ($value);
     }
     $this->branchspecs([ map { my @a = split(/:/, $_, 2); @a == 1 ? [$a[0], $a[0]] : \@a } $this->get_remote_config_collection("fetch") ]);
+    $this->change_charset($this->get_remote_config_optional("change-charset"));
+}
+
+sub to_utf8 {
+    my $this = shift;
+    my $text = shift;
+    if ($this->change_charset) {
+	return encode_utf8(decode($this->change_charset, $text));
+    }
+    else {
+	return $text;
+    }
 }
 
 1;
