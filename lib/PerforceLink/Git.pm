@@ -11,6 +11,7 @@ use Data::Dumper;
 use Cwd qw(abs_path);
 use Carp;
 use Encode;
+use Date::Format;
 use PerforceLink qw(:p4);
 # p4 help filetypes
 use constant FILETYPE_ALIASES => {
@@ -229,7 +230,7 @@ sub fetch_p4_changes {
     print "progress ".$this->p4base."/...".($since_changelist ? " since \@$since_changelist":"")."\n";
 
     for my $p4change ($this->accumulate_changes($since_changelist)) {
-	print "progress $p4change->{id} - $p4change->{user}->{User} - $p4change->{subject}\n";
+	print "progress $p4change->{id} - ".time2str("%d %b %Y %H:%M:%S", $p4change->{time}, "GMT")." - $p4change->{user}->{User} - $p4change->{subject}\n";
 	my $raw_changeinfo = p4_recv("describe", "-s", $p4change->{id});
 	my $commit_text = $this->to_utf8($p4change->{desc});
 	my $current_branch;

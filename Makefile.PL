@@ -10,6 +10,7 @@ WriteMakefile(
 	IO::Wrap => undef,
 	Carp => undef,
 	Encode => undef,
-	Class::Accessor => undef
+	Class::Accessor => undef,
+	Date::Format => undef
     }
     );
