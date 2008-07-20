@@ -119,11 +119,7 @@ sub accumulate_changes {
 
     my @p4changes;
     if ($this->fast_scan) {
-	for my $p4change (p4_recv("changes", "-l", "-t", $this->p4base."/...".($since ? join("", '@', $since+1, ",#head") : ""))) {
-	    my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0] || '';
-	    my $p4user_info = get_p4user($p4change->{user});
-	    push @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
-	}
+	@p4changes = p4_recv("changes", "-l", "-t", $this->p4base."/...".($since ? join("", '@', $since+1, ",#head") : ""));
     }
     else {
 	my @paths;
@@ -139,15 +135,27 @@ sub accumulate_changes {
 	}
 
 	for my $path (@paths) {
-	    for my $p4change (p4_recv("changes", "-l", "-t", "$path/...".($since ? join("", '@', $since+1, ",#head") : ""))) {
-		my $p4changedesc = [split(/\n/, $p4change->{desc})]->[0] || '';
-		my $p4user_info = get_p4user($p4change->{user});
-		push @p4changes, { user => $p4user_info, id => $p4change->{change}, subject => $p4changedesc, desc => $p4change->{desc}, time => $p4change->{time} };
+	    if ($since) {
+		my($old_change) = p4_recv("changes", "-m", "1", "$path/...\@$since");
+		if (!$old_change) {
+		    push @p4changes, p4_recv("changes", "-l", "-t", "$path/...");
+		}
+		else {
+		    push @p4changes, p4_recv("changes", "-l", "-t", "$path/...".($since ? join("", '@', $since+1, ",#head") : ""));
+		}
+	    }
+	    else {
+		push @p4changes, p4_recv("changes", "-l", "-t", "$path/...");
 	    }
 	}
     }
 
-    return sort { $a->{id} <=> $b->{id} } @p4changes;
+    return sort { $a->{id} <=> $b->{id} } map {
+	{ user => get_p4user($_->{user}),
+	  id => $_->{change},
+	  subject => ([split(/\n/, $_->{desc})]->[0] || ''),
+	  desc => $_->{desc},
+	  time => $_->{time} } } @p4changes;
 }
 
 sub known_branches {
