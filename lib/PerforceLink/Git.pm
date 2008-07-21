@@ -272,8 +272,10 @@ sub fetch_p4_changes {
 		    if ($branch_exists{$branch}) {
 			print "from refs/remotes/".$this->remotename."/$branch^0\n";
 		    }
-		    elsif ($branch_grafts{$branch}) {
-			print "merge :$branch_grafts{$branch}\n";
+		    elsif (exists $branch_grafts{$branch}) {
+			unless ($branch_grafts{$branch} == 0) {
+			    print "merge :$branch_grafts{$branch}\n";
+			}
 			$new_branch = $branch;
 		    }
 		    else {
