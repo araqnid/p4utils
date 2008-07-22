@@ -25,8 +25,9 @@ sub extract_release($) {
     }
 }
 
-sub transport_change($$$) {
+sub transport_change($$$$) {
     my $prefix = shift;
+    my $dry_run = shift;
     my $target_release = shift;
     my $existing_change = shift;
     my $change_info = p4_recv("describe", "-s", $existing_change);
@@ -107,15 +108,20 @@ sub transport_change($$$) {
 
     p4_exec("resolve", "-as", "//depot/site/$target_release/...");
 
-    p4_exec("submit", "-c", $new_change);
+    if ($dry_run) {
+	print "** Changelist $new_change not submitted in -n mode\n";
+    }
+    else {
+	p4_exec("submit", "-c", $new_change);
+    }
 }
 
-use vars qw($opt_d $opt_p);
+use vars qw($opt_d $opt_p $opt_n);
 
-getopts('dp:') or die "Syntax: $0 [-d] [-p \"change prefix\"] [rel_XX] changelist...\n";
+getopts('dp:n') or die "Syntax: $0 [-d] [-n] [-p \"change prefix\"] [rel_XX] changelist...\n";
 $PerforceLink::DEBUG = $opt_d;
 
 my($release) = grep { /^rel_/ } @ARGV;
 for (grep { /^\d+$/ } @ARGV) {
-    transport_change($opt_p, $release && "release/$release", $_);
+    transport_change($opt_p, $opt_n, $release && "release/$release", $_);
 }
