@@ -473,7 +473,11 @@ sub get_remote_config_collection {
     my $key = shift;
     croak "No repo" unless $this->git_repo;
     croak "No remote name" unless $this->remotename;
-    split(/\n/, $this->git_repo->command("config", "--get-all", join(".", "p4-remote", $this->remotename, $key)));
+    try {
+	split(/\n/, $this->git_repo->command("config", "--get-all", join(".", "p4-remote", $this->remotename, $key)));
+    } catch Git::Error::Command with {
+	return ();
+    }
 }
 
 sub set_remote_config_collection {
