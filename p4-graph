@@ -31,16 +31,15 @@ sub show_file {
 		$branchidx = $k;
 	    }
 	}
+	die "Branch not found: $depotfile\n" unless (defined ($branchidx));
 
 	#print "  depotfile=$depotfile\n  branchidx=$branchidx branches=@branches\n";
-	for my $k (0..$#branches) {
-	    print (($k == $branchidx ? '* ' : '| '));
-	}
+	print join('', map { $_ == $branchidx ? '* ' : '| ' } 0..$#branches);
 
-	print " [$user] $depotfile #$filerev $action\@$changelist $message\n";
+	print "[$user] $depotfile #$filerev $action\@$changelist $message\n";
 
 	my $taken_from;
-	if ($action eq 'branch' || $action eq 'integrate') {
+	if ($action eq 'branch' || $action eq 'integrate' || $action eq 'add') {
 	    for (my $j = 0; $filelog->{"how$i,$j"}; $j++) {
 		my $how = $filelog->{"how$i,$j"};
 		my $file = $filelog->{"file$i,$j"};
@@ -48,7 +47,6 @@ sub show_file {
 		my $erev = $filelog->{"erev$i,$j"};
 		if ($how =~ /from/ || $how eq 'ignored') {
 		    $taken_from = [$file, $how, $srev, $erev];
-		    last;
 		}
 	    }
 	}
@@ -58,81 +56,135 @@ sub show_file {
 	    for ($from_branchidx = 0; $from_branchidx <= $#branches; $from_branchidx++) {
 		last if ($branches[$from_branchidx] eq $taken_from->[0]);
 	    }
+
 	    if ($from_branchidx > $#branches) {
-		#print "  taken_from<new>=$taken_from->[0]\n  branches=@branches\n";
-		# new branch
-		if (@branches) {
-		    my $after;
-		    for my $k (0..$#branches) {
-			if ($branches[$k] eq $depotfile) {
-			    print '|\\';
-			    $after = 1;
-			}
-			elsif ($k == $#branches) {
-			    print '  ';
-			}
-			elsif ($after) {
-			    print ' \\';
-			}
-			else {
-			    print ' |';
-			}
-		    }
-		    print "\n";
-		}
-		splice @branches, $branchidx+1, 0, $taken_from->[0];
-	    }
-	    else {
-		#print "  taken_from<existing>=$taken_from->[0]\n  branches=@branches\n";
-		# existing branch
-		if ($branchidx > $from_branchidx) {
-		    # line from right to left
-		    for my $linepos ($from_branchidx..$branchidx-1) {
-			for my $k (0..$#branches) {
-			    if ($k < $linepos) {
-				print '| ';
-			    }
-			    elsif ($k == $linepos) {
-				print '/ ';
-			    }
-			    else {
-				print '| ';
-			    }
-			}
-			print "\n";
-		    }
+		if ($filerev == 1) {
+		    # First revision of current file taken from previously-unseen branch, so just replace.
+		    splice @branches, $branchidx, 1, $taken_from->[0];
 		}
 		else {
-		    # line from left to right
-		    for my $linepos ($branchidx..$from_branchidx-1) {
+		    # new branch
+		    if (@branches) {
 			for my $k (0..$#branches) {
-			    if ($k < $linepos) {
-				print '| ';
-			    }
-			    elsif ($k == $linepos) {
+			    if ($k == $branchidx) {
 				print '|\\';
 			    }
+			    elsif ($k > $branchidx) {
+				print ' \\';
+			    }
 			    else {
-				print '| ';
+				print ' |';
 			    }
 			}
 			print "\n";
 		    }
+		    splice @branches, $branchidx+1, 0, $taken_from->[0];
+		}
+		show_file($taken_from->[0], $taken_from->[2], $taken_from->[3]);
+	    }
+	    else {
+		if ($filerev == 1) {
+		    # First revision of current file taken from existing branch
+		    if ($branchidx > $from_branchidx) {
+			# line from right to left
+			for my $linepos ($from_branchidx..$branchidx-1) {
+			    for my $k (0..$#branches) {
+				if ($k < $linepos) {
+				    print '| ';
+				}
+				elsif ($k == $linepos) {
+				    print '|/';
+				}
+				elsif ($k == $#branches) {
+				    print '  ';
+				}
+				else {
+				    print ' /';
+				}
+			    }
+			    print "\n";
+			}
+		    }
+		    else {
+			# line from left to right
+			for my $linepos ($branchidx..$from_branchidx-1) {
+			    for my $k (0..$#branches) {
+				if ($k == $linepos) {
+				    print '|\\';
+				}
+				elsif ($branches[$k] eq 'dead') {
+				    print '  ';
+				}
+				elsif ($k > $linepos) {
+				    print '/ ';
+				}
+				else {
+				    print '| ';
+				}
+			    }
+			    print "\n";
+			}
+		    }
+
+		    splice(@branches, $branchidx, 1);
+		}
+		else {
+		    #print "  taken_from<existing>=$taken_from->[0]\n  branches=@branches\n";
+		    # existing branch
+		    if ($branchidx > $from_branchidx) {
+			# line from right to left
+			for my $linepos ($from_branchidx..$branchidx-1) {
+			    for my $k (0..$#branches) {
+				if ($k < $linepos) {
+				    print '| ';
+				}
+				elsif ($k == $linepos) {
+				    print '/ ';
+				}
+				else {
+				    print '| ';
+				}
+			    }
+			    print "\n";
+			}
+		    }
+		    else {
+			# line from left to right
+			for my $linepos ($branchidx..$from_branchidx-1) {
+			    for my $k (0..$#branches) {
+				if ($k < $linepos) {
+				    print '| ';
+				}
+				elsif ($k == $linepos) {
+				    print '|\\';
+				}
+				else {
+				    print '| ';
+				}
+			    }
+			    print "\n";
+			}
+		    }
 		}
 	    }
-	    show_file($taken_from->[0], $taken_from->[2], $taken_from->[3]);
 	}
 	elsif ($filerev == 1) {
 	    # root change
 	    #print "Clearing after root change\n";
-	    splice(@branches, $branchidx, 0);
+	    splice(@branches, $branchidx, 1);
 	}
     }
 }
 
+$PerforceLink::DEBUG = $ENV{P4UTILS_DEBUG};
 my $start_file = shift;
 my($fstat) = p4_recv("fstat", $start_file);
 die $fstat->{data} if ($fstat->{code} eq 'error');
 my $depotfile = $fstat->{depotFile};
 push @branches, $depotfile;
-show_file($depotfile);
+if ($start_file =~ /#(\d+)$/) {
+    show_file($depotfile, "#none", "#$1");
+}
+else {
+    show_file($depotfile);
+}
