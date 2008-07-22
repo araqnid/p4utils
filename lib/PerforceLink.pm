@@ -196,7 +196,7 @@ sub p4_recv {
     }
     else {
 	print STDERR "** $pid: ".decode_exitstatus($status)." p4 $subcommand @args\n" if ($DEBUG);
-	die "Getting data from p4 $subcommand failed\n";
+	croak "Getting data from p4 $subcommand failed";
     }
 
     if (wantarray) {
@@ -239,7 +239,7 @@ sub p4_send($$) {
     }
     else {
 	print STDERR "** $pid: ".decode_exitstatus($status)." p4 $subcommand -i\n" if ($DEBUG);
-	die "sending data to p4 $subcommand failed: ".Data::Dumper->new([\@objects], [qw|objects|])->Terse(1)->Indent(0)->Dump."\n";
+	croak "sending data to p4 $subcommand failed: ".Data::Dumper->new([\@objects], [qw|objects|])->Terse(1)->Indent(0)->Dump;
     }
 
     if (wantarray) {
