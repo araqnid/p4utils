@@ -1,0 +1,118 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use Data::Dumper;
+use Getopt::Std;
+use PerforceLink qw(:p4);
+
+sub extract_release($) {
+    my $file = shift;
+    if ($file =~ m{^//depot/site/main/}) {
+	return "main";
+    }
+    elsif ($file =~ m{^//depot/site/(release/[^/]+)/}) {
+	return $1;
+    }
+    elsif ($file =~ m{^//depot/site/(branch/[^/]+/[^/]+)/}) {
+	return $1;
+    }
+    else {
+	die "File location in repository not recognised: $file\n";
+    }
+}
+
+sub transport_change($$$) {
+    my $prefix = shift;
+    my $target_release = shift;
+    my $existing_change = shift;
+    my $change_info = p4_recv("describe", "-s", $existing_change);
+    my @jobs;
+    my %new_change_spec = (code => 'stat', Change => 'new');
+    for (my $jobindex = 0; defined (my $job = $change_info->{"job$jobindex"}); $jobindex++) {
+	my $job_info = p4_recv("job", "-o", $job);
+	my $summary = $job_info->{Summary};
+	chomp $summary;
+	print "$existing_change: fixes $job | $summary\n";
+	$new_change_spec{"Jobs$jobindex"} = $job;
+	push @jobs, $job;
+    }
+
+    my $change_release;
+    for (my $fileindex = 0; defined (my $file = $change_info->{"depotFile$fileindex"}); $fileindex++) {
+	my $file_release = extract_release($file);
+	if ($change_release && $change_release ne $file_release) {
+	    die "Change includes $file which is in $file_release, not $change_release as the previous files found in the change\n";
+	}
+	$change_release = $file_release;
+    }
+
+    die "Unable to determine changelist release (does the changelist have any files?)\n" unless $change_release;
+
+    my $reverse_branch;
+    my $branch;
+    if ($change_release =~ m{^release/(.+)}) {
+	my $release_name = $1;
+	die "Cannot push change on a release to another release\n" if ($target_release);
+	$target_release = 'main';
+	$reverse_branch = 1;
+	$prefix = "From $release_name";
+	$branch = $change_release;
+    }
+    elsif ($change_release eq 'main') {
+	die "Target release not specified\n" unless ($target_release);
+	die "Description prefix not specified\n" unless ($prefix);
+	$branch = $target_release;
+    }
+    else {
+	die "Can't push change from $change_release\n";
+    }
+
+    $new_change_spec{Description} = "$prefix:\n".$change_info->{desc};
+
+    my $new_change;
+    for (p4_send("change", \%new_change_spec)) {
+	if ($_->{data} =~ /Change (\d+) created/) {
+	    $new_change = $1;
+	    print "$new_change: $_->{data}\n";
+	    last;
+	}
+    }
+
+    die "Unable to extract change number from p4 change output\n" unless ($new_change);
+    eval {
+	my $files_open = 0;
+	for (p4_recv("opened", "//depot/site/$target_release/...")) {
+	    print "Release file open: ".$_->{depotFile}."\n";
+	    ++$files_open;
+	}
+	die "$files_open files already open in release area\n" if ($files_open);
+
+	p4_exec("integ", $reverse_branch ? ("-r") : (), "-b", "site/$branch", "-c", $new_change, "\@$existing_change,$existing_change");
+
+	my $new_change_info = p4_recv("describe", "-s", $new_change);
+	die "No files created in new changelist\n" unless ($new_change_info->{depotFile0});
+    };
+    if ($@) {
+	# Error creating change, delete it
+	for (@jobs) {
+	    p4_exec("fix", "-c", $new_change, "-d", $_);
+	}
+	p4_exec("change", "-d", $new_change);
+	die "Unable to create change in $target_release: $@";
+    }
+
+    p4_exec("resolve", "-as", "//depot/site/$target_release/...");
+
+    p4_exec("submit", "-c", $new_change);
+}
+
+use vars qw($opt_d $opt_p);
+
+getopts('dp:') or die "Syntax: $0 [-d] [-p \"change prefix\"] [rel_XX] changelist...\n";
+$PerforceLink::DEBUG = $opt_d;
+
+my($release) = grep { /^rel_/ } @ARGV;
+for (grep { /^\d+$/ } @ARGV) {
+    transport_change($opt_p, $release && "release/$release", $_);
+}
