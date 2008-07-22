@@ -57,22 +57,58 @@ sub transport_change($$$$) {
     my $branch;
     if ($change_release =~ m{^release/(.+)}) {
 	my $release_name = $1;
-	die "Cannot push change on a release to another release\n" if ($target_release);
-	$target_release = 'main';
+	if ($target_release) {
+	    if ($target_release =~ m{^(release/rel_\d+)\.}) {
+		my $target_release_base = $1;
+		if ($target_release_base ne $change_release) {
+		    die "Can only push onto point release from base release branch: $change_release -> $target_release\n";
+		}
+	    }
+	    else {
+		die "Cannot push chagne on a release to another release\n";
+	    }
+	}
+	else {
+	    $target_release = 'main';
+	}
 	$reverse_branch = 1;
-	$prefix = "From $release_name";
+	$prefix = $release_name;
 	$branch = $change_release;
     }
     elsif ($change_release eq 'main') {
 	die "Target release not specified\n" unless ($target_release);
-	die "Description prefix not specified\n" unless ($prefix);
+	if ($target_release =~ /rel_\d+\./) {
+	    die "Can only push onto point release from base release branch: $change_release -> $target_release\n";
+	}
+	$prefix ||= "mainline";
 	$branch = $target_release;
     }
     else {
 	die "Can't push change from $change_release\n";
     }
 
-    $new_change_spec{Description} = "$prefix:\n".$change_info->{desc};
+    my($client_spec) = p4_recv("client", "-o");
+    my $target_view;
+    my $source_view;
+    for (my $i = 0; $client_spec->{"View$i"}; $i++) {
+	my $view = $client_spec->{"View$i"};
+	my($depot_pattern, $client_pattern) = split(/ /, $view);
+	if ($depot_pattern =~ m{^//depot/site/\Q$change_release\E/}) {
+	    $source_view = $view;
+	}
+	if ($depot_pattern =~ m{^//depot/site/\Q$target_release\E/}) {
+	    $target_view = $view;
+	}
+    }
+    die "Source release not in client spec: $change_release\n" unless $source_view;
+    die "Target release not in client spec: $target_release\n" unless $target_view;
+
+    my $change_message = $change_info->{desc};
+    if ($change_message !~ s{^\[([^ \]]+)\] }{[$1|$prefix] }  && $change_message !~ s{From (\S+):\n}{[$1|$prefix] }) {
+	$change_message = "[$prefix] $change_message";
+    }
+    $new_change_spec{Description} = $change_message;
+    print join("", map { ">> $_\n" } split(/\n/, $new_change_spec{Description}));
 
     my $new_change;
     for (p4_send("change", \%new_change_spec)) {
