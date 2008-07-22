@@ -68,6 +68,9 @@ sub transport_change($$$$) {
 		die "Cannot push chagne on a release to another release\n";
 	    }
 	}
+	elsif ($change_release =~ m{^(release/rel_\d+)\.}) {
+	    $target_release = $1;
+	}
 	else {
 	    $target_release = 'main';
 	}
