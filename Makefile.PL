@@ -4,7 +4,7 @@ use utf8;
 
 WriteMakefile(
     NAME => "PerforceLink",
-    EXE_FILES => [qw|p4-fast-import unmarshal|],
+    EXE_FILES => [qw|p4-git-xfer unmarshal|],
     PREREQ_PM => {
 	Git => undef,
 	IO::Wrap => undef,
