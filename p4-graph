@@ -132,7 +132,7 @@ sub show_file {
 
 my $start_file = shift;
 my($fstat) = p4_recv("fstat", $start_file);
-die "Not found in depot: $start_file\n" unless ($fstat);
+die $fstat->{data} if ($fstat->{code} eq 'error');
 my $depotfile = $fstat->{depotFile};
 push @branches, $depotfile;
 show_file($depotfile);
