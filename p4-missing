@@ -1,0 +1,21 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use PerforceLink qw(:p4);
+use File::Find;
+
+my %registered = map { $_ => 1 } map { s{\Q$ENV{PWD}/}{} && $_ } map { $_->{path} } (p4_recv("have", "..."), map { [p4_recv("where", $_->{clientFile})]->[0] } p4_recv("opened", "..."));
+
+find(sub {
+    if (m{^\..} || $File::Find::dir =~ m{/(target)$} || m{~$}) {
+	$File::Find::prune = 1;
+	return;
+    }
+    return unless -f;
+    (my $filename = $File::Find::name) =~ s{^\./}{};
+    return if ($registered{$filename});
+    print "$filename\n";
+     }, ".");
