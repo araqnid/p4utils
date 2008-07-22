@@ -10,10 +10,11 @@ use File::Find;
 my %registered = map { $_ => 1 } map { s{\Q$ENV{PWD}/}{} && $_ } map { $_->{path} } (p4_recv("have", "..."), map { [p4_recv("where", $_->{clientFile})]->[0] } p4_recv("opened", "..."));
 
 find(sub {
-    if (m{^\..} || $File::Find::dir =~ m{/(target)$} || m{~$}) {
+    if (m{^\..} || $File::Find::dir =~ m{/(target|build|dist|bin|doc/javadoc|doc/checkstyle|precompjsp)$}) {
 	$File::Find::prune = 1;
 	return;
     }
+    return if ($File::Find::name =~ m{/(testconfig/log4j.xml|testconfig/jndi.properties|testconfig/hibernate.properties|run)$} || m{~$});
     return unless -f;
     (my $filename = $File::Find::name) =~ s{^\./}{};
     return if ($registered{$filename});
