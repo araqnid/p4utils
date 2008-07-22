@@ -14,7 +14,10 @@ sub extract_release($) {
     elsif ($file =~ m{^//depot/site/(release/[^/]+)/}) {
 	return $1;
     }
-    elsif ($file =~ m{^//depot/site/(branch/[^/]+/[^/]+)/}) {
+    elsif ($file =~ m{^//depot/site/(branch/\d{4}-\d{2}-\d{2}/[^/]+)/}) {
+	return $1;
+    }
+    elsif ($file =~ m{^//depot/site/(branch/\d{4}-\d{4})/}) {
 	return $1;
     }
     else {
