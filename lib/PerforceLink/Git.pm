@@ -550,7 +550,7 @@ sub get_tip {
 sub update_mirrors {
     my $this = shift;
     my $last_change_id = shift;
-    my $update_reason = $last_change_id ? ("from ".$this->p4base) : ("from ".$this->p4base." \@$last_change_id");
+    my $update_reason = $last_change_id ? ("from ".$this->p4base." \@$last_change_id") : ("from ".$this->p4base);
     for (@{$this->mirrorspecs}) {
 	my($p4_branch, $git_branch) = @$_;
 	my $p4_tip_commit = $this->get_tip("refs/remotes/".$this->remotename."/$p4_branch");
