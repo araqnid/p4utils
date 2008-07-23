@@ -555,26 +555,26 @@ sub update_mirrors {
 	my($p4_branch, $git_branch) = @$_;
 	my $p4_tip_commit = $this->get_tip("refs/remotes/".$this->remotename."/$p4_branch");
 	if (!$p4_tip_commit) {
-	    printf(" ? [not imported]      %-10s\n", $p4_branch);
+	    printf(" ? [not imported]    %-10s\n", $p4_branch);
 	    next;
 	}
 	my $git_tip_commit = $this->get_tip("refs/heads/$git_branch");
 	if (!$git_tip_commit) {
-	    printf(" * [new branch]        %-10s -> %-10s\n", $p4_branch, $git_branch);
+	    printf(" * [new branch]      %-10s -> %-10s\n", $p4_branch, $git_branch);
 	    $this->git_repo->command_noisy("update-ref", "-m", $update_reason, "refs/heads/$git_branch", $p4_tip_commit);
 	    $this->git_repo->command_noisy("config", "branch.$git_branch.p4-remote", $this->remotename);
 	}
 	elsif ($git_tip_commit eq $p4_tip_commit) {
-	    printf(" = [up to date]        %-10s -> %-10s\n", $p4_branch, $git_branch);
+	    printf(" = [up to date]      %-10s -> %-10s\n", $p4_branch, $git_branch);
 	}
 	else {
 	    my $fast_forward = grep { $_ eq "-$git_tip_commit" } $this->git_repo->command("rev-list", "--boundary", $p4_tip_commit, "--not", $git_tip_commit);
 	    if ($fast_forward) {
-		printf("   %s..%s  %-10s -> %-10s\n", substr($git_tip_commit, 0, 8), substr($p4_tip_commit, 0, 8), $p4_branch, $git_branch);
+		printf("   %s..%s  %-10s -> %-10s\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
 		$this->git_repo->command_noisy("update-ref", "-m", "$update_reason (fast forward)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
 	    }
 	    else {
-		printf(" + %s..%s  %-10s -> %-10s (forced update)\n", substr($git_tip_commit, 0, 8), substr($p4_tip_commit, 0, 8), $p4_branch, $git_branch);
+		printf(" + %s..%s  %-10s -> %-10s (forced update)\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
 		$this->git_repo->command_noisy("update-ref", "-m", "$update_reason (forced update)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
 	    }
 	}
