@@ -10,7 +10,7 @@ use Date::Parse;
 use Date::Format;
 use Cwd;
 use Fcntl;
-use vars qw($opt_c);
+use vars qw($opt_c $opt_a);
 
 sub diffstat_available {
     my $pid = fork;
@@ -24,7 +24,7 @@ sub diffstat_available {
     return $? == 0;
 }
 
-getopts('c:') && @ARGV == 0 or die "Syntax: [-c changelist#] $0 > patch-file\n";
+getopts('c:a') && @ARGV == 0 or die "Syntax: [-c changelist# | -a] $0 > patch-file\n";
 my $dir = getcwd;
 
 my @opened_args = ("...");
@@ -36,6 +36,15 @@ if (!$changeno) {
     my @distinct_changes = keys %changes;
     if (@distinct_changes == 1) {
 	$changeno = $distinct_changes[0];
+    }
+    elsif ($opt_a) {
+	if (grep { $_ eq 'default' } @distinct_changes) {
+	    die "Can't produce a patchset that mixes numbered and default changelist files\n";
+	}
+	for (@distinct_changes) {
+	    system($0, "-c", $_);
+	}
+	exit;
     }
     else {
 	die "Found open files covering multiple changelists, please specify changelist with -c: ".join(", ", @distinct_changes)."\n";
