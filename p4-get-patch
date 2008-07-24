@@ -79,6 +79,7 @@ for my $opened (@opened) {
     my $location = p4_recv("where", $opened->{clientFile});
     my $filename = $location->{path};
     $filename =~ s{^\Q$dir/}{};
+    $opened->{output_filename} = $filename;
 
     if ($opened->{action} eq 'edit') {
 	my($header, $output) = p4_recv("diff", "-du", $opened->{clientFile});
@@ -149,8 +150,22 @@ if ($tmpfile) {
     if (system("diffstat", $tmpfile) != 0) {
 	die "diffstat failed: $!\n";
     }
+    for (@opened) {
+	if ($_->{action} eq 'add') {
+	    print " create file $_->{output_filename}\n";
+	}
+	elsif ($_->{action} eq 'delete') {
+	    print " delete file $_->{output_filename}\n";
+	}
+    }
+    print "\n";
     if (system("cat", $tmpfile) != 0) {
 	die "cat failed: $!\n";
     }
     unlink $tmpfile;
+}
+
+if ($changeno && $changeno ne 'default') {
+    print "--\n";
+    print "\n";
 }
