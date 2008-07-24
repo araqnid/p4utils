@@ -184,8 +184,22 @@ sub p4_recv {
     $pipe->reader;
     print STDERR "** $pid: RECV p4 $subcommand @args\n" if ($DEBUG);
     my @objects;
-    while (!$pipe->eof) {
-	push @objects, unmarshal($pipe);
+    if ($subcommand eq 'diff') {
+	while (!$pipe->eof) {
+	    push @objects, unmarshal($pipe);
+	    my $line;
+	    my $output = '';
+	    # FIXME need to be able to somehow detect the end of the diff output
+	    while (defined($line = $pipe->getline)) {
+		$output .= $line;
+	    }
+	    push @objects, $output;
+	}
+    }
+    else {
+	while (!$pipe->eof) {
+	    push @objects, unmarshal($pipe);
+	}
     }
     $pipe->close;
     waitpid $pid, 0;

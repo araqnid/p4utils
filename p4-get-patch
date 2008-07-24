@@ -1,0 +1,80 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use PerforceLink qw(:p4);
+use Getopt::Std;
+use Cwd;
+
+getopts('') && @ARGV == 0 or die "Syntax: $0 > patch-file\n";
+my $dir = getcwd;
+
+for my $opened (p4_recv("opened", "...")) {
+    my $location = p4_recv("where", $opened->{clientFile});
+    my $filename = $location->{path};
+    $filename =~ s{^\Q$dir/}{};
+
+    if ($opened->{action} eq 'edit') {
+	my($header, $output) = p4_recv("diff", "-du", $opened->{clientFile});
+	print "diff --p4 a/$filename b/$filename\n";
+	print "--- a/$filename\n";
+	print "+++ b/$filename\n";
+
+	print $output;
+    }
+    elsif ($opened->{action} eq 'add' || $opened->{action} eq 'branch' || $opened->{action} eq 'integrate') {
+	print "diff --p4 a/$filename b/$filename\n";
+	print "--- /dev/null\n";
+	print "+++ b/$filename\n";
+
+	open(FILE, $location->{path}) or die "Unable to read $location->{path}: $!\n";
+	my $lines = 0;
+	while (<FILE>) {
+	    ++$lines;
+	}
+	if ($lines == 0) {
+	    die "Empty file cannot be put into a patch\n";
+	}
+	elsif ($lines == 1) {
+	    print "\@\@ -0,0 +$lines \@\@\n";
+	}
+	else {
+	    print "\@\@ -0,0 +1,$lines \@\@\n";
+	}
+	seek(FILE, 0, 0);
+	my $has_newline;
+	while (<FILE>) {
+	    $has_newline = chomp;
+	    print "+$_\n";
+	}
+	close(FILE);
+	print "\\ No newline at end of file\n" unless ($has_newline);
+    }
+    elsif ($opened->{action} eq 'delete') {
+	print "diff --p4 a/$filename b/$filename\n";
+	print "--- a/$filename\n";
+	print "+++ /dev/null\n";
+
+	my($header, @data) = p4_recv('print', $opened->{depotFile});
+	my $content = join('', map { $_->{data} } @data);
+	my @lines = split(/\n/, $content);
+	my $line_count = scalar @lines;
+	if ($line_count == 0) {
+	    print "Empty file cannot be deleted in a patch\n";
+	}
+	elsif ($line_count == 1) {
+	    print "\@\@ -1 +0,0 \@\@\n";
+	}
+	else {
+	    print "\@\@ -1,$line_count +0,0 \@\@\n";
+	}
+	for (@lines) {
+	    print "-$_\n";
+	}
+	if ($content !~ /\n$/) {
+	    print "\\ No newline at end of file\n";
+	}
+    }
+}
