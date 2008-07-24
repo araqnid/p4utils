@@ -6,12 +6,56 @@ use warnings;
 use utf8;
 use PerforceLink qw(:p4);
 use Getopt::Std;
+use Date::Parse;
+use Date::Format;
 use Cwd;
+use vars qw($opt_c);
 
-getopts('') && @ARGV == 0 or die "Syntax: $0 > patch-file\n";
+getopts('c:') && @ARGV == 0 or die "Syntax: [-c changelist#] $0 > patch-file\n";
 my $dir = getcwd;
 
-for my $opened (p4_recv("opened", "...")) {
+my @opened_args = ("...");
+unshift @opened_args, "-c", $opt_c if ($opt_c);
+my @opened = p4_recv("opened", @opened_args);
+my $changeno = $opt_c;
+if (!$changeno) {
+    my %changes = map { ($_, 1) } map { $_->{change} } @opened;
+    my @distinct_changes = keys %changes;
+    if (@distinct_changes == 1) {
+	$changeno = $distinct_changes[0];
+    }
+    else {
+	die "Found open files covering multiple changelists, please specify changelist with -c: ".join(", ", @distinct_changes)."\n";
+    }
+}
+
+if ($changeno && $changeno ne 'default') {
+    my($changeinfo) = p4_recv("change", "-o", $changeno);
+    die $changeinfo->data if ($changeinfo->{code} eq 'error');
+
+    print "From $changeno ".time2str("%a %b %d %H:%M:%S %Y", time)."\n";
+
+    my $userid = $changeinfo->{User};
+    my($userinfo) = p4_recv("user", "-o", $userid);
+    die $userinfo->data if ($userinfo->{code} eq 'error');
+    print "From: $userinfo->{FullName} <$userinfo->{Email}>\n";
+
+    my $datestring = $changeinfo->{Date};
+    my $date = str2time($datestring);
+    print "Date: ".time2str("%a, %d %b %Y %H:%M:%S %z", $date)."\n";
+
+    my($subject, $residual) = split(/\n/, $changeinfo->{Description}, 2);
+    $residual =~ s/^\n+//;
+    print "Subject: [PATCH] $subject\n\n$residual\n";
+    for (my $i = 0; $changeinfo->{"Jobs$i"}; $i++) {
+	my $job = $changeinfo->{"Jobs$i"};
+	print "Fixes: $job\n";
+    }
+    print "---\n";
+}
+
+
+for my $opened (@opened) {
     my $location = p4_recv("where", $opened->{clientFile});
     my $filename = $location->{path};
     $filename =~ s{^\Q$dir/}{};
