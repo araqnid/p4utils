@@ -9,7 +9,20 @@ use Getopt::Std;
 use Date::Parse;
 use Date::Format;
 use Cwd;
+use Fcntl;
 use vars qw($opt_c);
+
+sub diffstat_available {
+    my $pid = fork;
+    die "Cannot fork: $!\n" unless (defined($pid));
+    if ($pid == 0) {
+	open(STDIN, "</dev/null");
+	open(STDOUT, ">/dev/null");
+	exec "diffstat";
+    }
+    waitpid($pid, 0);
+    return $? == 0;
+}
 
 getopts('c:') && @ARGV == 0 or die "Syntax: [-c changelist#] $0 > patch-file\n";
 my $dir = getcwd;
@@ -54,6 +67,13 @@ if ($changeno && $changeno ne 'default') {
     print "---\n";
 }
 
+my $tmpfile;
+if (diffstat_available) {
+    my $tmpdir = $ENV{TMPDIR} || "/tmp";
+    $tmpfile = "$tmpdir/p4getpatch".sprintf("%X%X%X", time, $$, rand() * 0x10000);
+    sysopen(TMPFILE, $tmpfile, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0600) or die "Unable to write $tmpfile: $!\n";
+    select TMPFILE;
+}
 
 for my $opened (@opened) {
     my $location = p4_recv("where", $opened->{clientFile});
@@ -121,4 +141,16 @@ for my $opened (@opened) {
 	    print "\\ No newline at end of file\n";
 	}
     }
+}
+
+if ($tmpfile) {
+    select STDOUT;
+    close TMPFILE;
+    if (system("diffstat", $tmpfile) != 0) {
+	die "diffstat failed: $!\n";
+    }
+    if (system("cat", $tmpfile) != 0) {
+	die "cat failed: $!\n";
+    }
+    unlink $tmpfile;
 }
