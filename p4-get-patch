@@ -147,7 +147,7 @@ for my $opened (@opened) {
 if ($tmpfile) {
     select STDOUT;
     close TMPFILE;
-    if (system("diffstat", $tmpfile) != 0) {
+    if (system("diffstat", "-p1", $tmpfile) != 0) {
 	die "diffstat failed: $!\n";
     }
     for (@opened) {
