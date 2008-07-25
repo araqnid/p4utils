@@ -212,7 +212,7 @@ if (!$changeno) {
 	    die "Can't produce a patchset that mixes numbered and default changelist files\n";
 	}
 	my $patchindex = 0;
-	for $changeno (@distinct_changes) {
+	for $changeno (sort { $a <=> $b } @distinct_changes) {
 	    print_change_as_patch($changeno, ($opt_s ? ++$patchindex : 0), grep { $_->{change} == $changeno } @opened);
 	}
 	exit;
