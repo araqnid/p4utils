@@ -186,7 +186,7 @@ if (!$changeno) {
 	exit;
     }
     else {
-	die "Found open files covering multiple changelists, please specify changelist with -c: ".join(", ", @distinct_changes)."\n";
+	die "Found open files covering multiple changelists, please specify -a for all of them, or a single changelist with -c: ".join(", ", @distinct_changes)."\n";
     }
 }
 else {
