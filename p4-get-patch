@@ -10,7 +10,7 @@ use Date::Parse;
 use Date::Format;
 use Cwd;
 use Fcntl;
-use vars qw($opt_c $opt_a);
+use vars qw($opt_c $opt_a $opt_s);
 
 our $dir = getcwd;
 
@@ -29,11 +29,12 @@ sub diffstat_available() {
 sub print_patch(@) {
     my @opened = @_;
     my $tmpfile;
+    my $oldfh;
     if (diffstat_available) {
 	my $tmpdir = $ENV{TMPDIR} || "/tmp";
 	$tmpfile = "$tmpdir/p4getpatch".sprintf("%X%X%X", time, $$, rand() * 0x10000);
 	sysopen(TMPFILE, $tmpfile, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0600) or die "Unable to write $tmpfile: $!\n";
-	select TMPFILE;
+	$oldfh = select TMPFILE;
     }
 
     for my $opened (@opened) {
@@ -115,11 +116,15 @@ sub print_patch(@) {
     }
 
     if ($tmpfile) {
-	select STDOUT;
+	select $oldfh;
 	close TMPFILE;
-	if (system("diffstat", "-p1", $tmpfile) != 0) {
-	    die "diffstat failed: $!\n";
+
+	open(DIFFSTAT, "diffstat -p1 '$tmpfile' |") or die "Unable to open diffstat command: $!\n";
+	while (<DIFFSTAT>) {
+	    print;
 	}
+	close(DIFFSTAT);
+
 	for (@opened) {
 	    if ($_->{action} eq 'add') {
 		print " create file $_->{output_filename}\n";
@@ -129,31 +134,45 @@ sub print_patch(@) {
 	    }
 	}
 	print "\n";
-	if (system("cat", $tmpfile) != 0) {
-	    die "cat failed: $!\n";
+
+	open(TMPFILE, $tmpfile) or die "Unable to re-read $tmpfile: $!\n";
+	while (<TMPFILE>) {
+	    print;
 	}
+	close(TMPFILE);
+
 	unlink $tmpfile;
     }
 }
 
-sub print_change_as_patch($@) {
-    my($changeno, @opened) = @_;
+sub print_change_as_patch($$@) {
+    my($changeno, $patchindex, @opened) = @_;
     my($changeinfo) = p4_recv("change", "-o", $changeno);
     die $changeinfo->data if ($changeinfo->{code} eq 'error');
-
-    print "From $changeno ".time2str("%a %b %d %H:%M:%S %Y", time)."\n";
 
     my $userid = $changeinfo->{User};
     my($userinfo) = p4_recv("user", "-o", $userid);
     die $userinfo->data if ($userinfo->{code} eq 'error');
-    print "From: $userinfo->{FullName} <$userinfo->{Email}>\n";
 
     my $datestring = $changeinfo->{Date};
     my $date = str2time($datestring);
-    print "Date: ".time2str("%a, %d %b %Y %H:%M:%S %z", $date)."\n";
 
     my($subject, $residual) = split(/\n/, $changeinfo->{Description}, 2);
     $residual =~ s/^\n+//;
+
+    my $filename;
+    if ($patchindex) {
+	my $patch_name = $subject;
+	$patch_name =~ s/[^0-9A-Za-z]+/-/g;
+	$patch_name =~ s/^-//;
+	$filename = sprintf("%04d-%s.patch", $patchindex, substr($patch_name, 0, 50));
+	open(OUTPUT, ">$filename") or die "Unable to write $filename\n";
+	select OUTPUT;
+    }
+
+    print "From $changeno ".time2str("%a %b %d %H:%M:%S %Y", time)."\n";
+    print "From: $userinfo->{FullName} <$userinfo->{Email}>\n";
+    print "Date: ".time2str("%a, %d %b %Y %H:%M:%S %z", $date)."\n";
     print "Subject: [PATCH] $subject\n\n$residual\n";
     for (my $i = 0; $changeinfo->{"Jobs$i"}; $i++) {
 	my $job = $changeinfo->{"Jobs$i"};
@@ -165,9 +184,18 @@ sub print_change_as_patch($@) {
 
     print "--\n";
     print "\n";
+
+    if ($filename) {
+	close(OUTPUT);
+	print STDOUT "Wrote $filename\n";
+    }
 }
 
-getopts('c:a') && @ARGV == 0 or die "Syntax: [-c changelist# | -a] $0 > patch-file\n";
+getopts('c:as') && @ARGV == 0 or die <<EOF;
+Syntax: $0 [-c changelist# | -a] $0 > patch-file
+        $0 [-c changelist# | -a] -s
+EOF
+	    ;
 
 my @opened_args = ("...");
 unshift @opened_args, "-c", $opt_c if ($opt_c);
@@ -177,14 +205,15 @@ if (!$changeno) {
     my %changes = map { ($_, 1) } map { $_->{change} } @opened;
     my @distinct_changes = keys %changes;
     if (@distinct_changes == 1) {
-	print_change_as_patch($distinct_changes[0], @opened);
+	print_change_as_patch($distinct_changes[0], $opt_s ? 1 : 0, @opened);
     }
     elsif ($opt_a) {
 	if (grep { $_ eq 'default' } @distinct_changes) {
 	    die "Can't produce a patchset that mixes numbered and default changelist files\n";
 	}
+	my $patchindex = 0;
 	for $changeno (@distinct_changes) {
-	    print_change_as_patch($changeno, grep { $_->{change} == $changeno } @opened);
+	    print_change_as_patch($changeno, ($opt_s ? ++$patchindex : 0), grep { $_->{change} == $changeno } @opened);
 	}
 	exit;
     }
@@ -193,5 +222,5 @@ if (!$changeno) {
     }
 }
 else {
-    print_change_as_patch($changeno, @opened);
+    print_change_as_patch($changeno, $opt_s ? 1 : 0, @opened);
 }
