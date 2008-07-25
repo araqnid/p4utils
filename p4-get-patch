@@ -45,6 +45,7 @@ sub print_patch(@) {
 	if ($opened->{action} eq 'edit' || $opened->{action} eq 'integrate') {
 	    my($header, $output) = p4_recv("diff", "-du", $opened->{clientFile});
 	    print "diff --p4 a/$filename b/$filename\n";
+	    print "$opened->{action} $opened->{type} $opened->{depotFile}#$opened->{rev}\n";
 
 	    if ($output) {
 		print "--- a/$filename\n";
@@ -58,6 +59,7 @@ sub print_patch(@) {
 	}
 	elsif ($opened->{action} eq 'add' || $opened->{action} eq 'branch') {
 	    print "diff --p4 a/$filename b/$filename\n";
+	    print "$opened->{action} $opened->{type} $opened->{depotFile}#$opened->{rev}\n";
 	    print "--- /dev/null\n";
 	    print "+++ b/$filename\n";
 
@@ -86,6 +88,7 @@ sub print_patch(@) {
 	}
 	elsif ($opened->{action} eq 'delete') {
 	    print "diff --p4 a/$filename b/$filename\n";
+	    print "$opened->{action} $opened->{type} $opened->{depotFile}#$opened->{rev}\n";
 	    print "--- a/$filename\n";
 	    print "+++ /dev/null\n";
 
