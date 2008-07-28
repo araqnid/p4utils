@@ -38,13 +38,19 @@ sub print_patch(@) {
     }
 
     for my $opened (@opened) {
-	my $location = p4_recv("where", $opened->{clientFile});
+	my $location = p4_recv("where", $opened->{depotFile});
 	my $filename = $location->{path};
 	$filename =~ s{^\Q$dir/}{};
 	$opened->{output_filename} = $filename;
 
 	if ($opened->{action} eq 'edit' || $opened->{action} eq 'integrate') {
-	    my($header, $output) = p4_recv("diff", "-du", $opened->{clientFile});
+	    my($header, $output);
+	    if ($opened->{clientFile}) {
+		($header, $output) = p4_recv("diff", "-du", $opened->{clientFile});
+	    }
+	    else {
+		($header, $output) = split(/\n/, p4_recv_raw("diff2", "-du", map { "$opened->{depotFile}#$_" } $opened->{rev}-1, $opened->{rev}), 2);
+	    }
 	    print "diff --p4 a/$filename b/$filename\n";
 	    print "$opened->{action} $opened->{type} $opened->{depotFile}#$opened->{rev}\n";
 
@@ -64,28 +70,45 @@ sub print_patch(@) {
 	    print "--- /dev/null\n";
 	    print "+++ b/$filename\n";
 
-	    open(FILE, $location->{path}) or die "Unable to read $location->{path}: $!\n";
-	    my $lines = 0;
-	    while (<FILE>) {
-		++$lines;
-	    }
-	    if ($lines == 0) {
-		die "Empty file cannot be put into a patch\n";
-	    }
-	    elsif ($lines == 1) {
-		print "\@\@ -0,0 +$lines \@\@\n";
+	    if ($opened->{clientFile}) {
+		open(FILE, $location->{path}) or die "Unable to read $location->{path}: $!\n";
+		my $lines = 0;
+		while (<FILE>) {
+		    ++$lines;
+		}
+		if ($lines == 0) {
+		    die "Empty file cannot be put into a patch\n";
+		}
+		elsif ($lines == 1) {
+		    print "\@\@ -0,0 +$lines \@\@\n";
+		}
+		else {
+		    print "\@\@ -0,0 +1,$lines \@\@\n";
+		}
+		seek(FILE, 0, 0);
+		my $has_newline;
+		while (<FILE>) {
+		    $has_newline = chomp;
+		    print "+$_\n";
+		}
+		close(FILE);
+		print "\\ No newline at end of file\n" unless ($has_newline);
 	    }
 	    else {
-		print "\@\@ -0,0 +1,$lines \@\@\n";
+		my $file_content = p4_recv_raw("print", "-q", "$opened->{depotFile}#$opened->{rev}");
+		my @lines = split(/\n/, $file_content);
+		if (@lines == 0) {
+		    die "Empty file cannot be put into a patch\n";
+		}
+		elsif (@lines == 1) {
+		    print "\@\@ -0,0 +1 \@\@\n";
+		}
+		else {
+		    print "\@\@ -0,0 +1,".scalar(@lines)." \@\@\n";
+		}
+		print join("", map { "+$_\n" } @lines);
+		print "\\ No newline at end of file\n" unless ($file_content =~ /\n\z/);
 	    }
-	    seek(FILE, 0, 0);
-	    my $has_newline;
-	    while (<FILE>) {
-		$has_newline = chomp;
-		print "+$_\n";
-	    }
-	    close(FILE);
-	    print "\\ No newline at end of file\n" unless ($has_newline);
 	}
 	elsif ($opened->{action} eq 'delete') {
 	    print "diff --p4 a/$filename b/$filename\n";
@@ -180,7 +203,21 @@ sub print_change_as_patch($$@) {
     }
     print "---\n";
 
-    print_patch(@opened);
+    if ($changeinfo->{Status} eq 'pending') {
+	print_patch(@opened);
+    }
+    else {
+	my($changedetail) = p4_recv("describe", "-s", $changeno);
+	my @changed;
+	for (my $i = 0; $changedetail->{"action$i"}; $i++) {
+	    push @changed, { action => $changedetail->{"action$i"},
+			     depotFile => $changedetail->{"depotFile$i"},
+			     type => $changedetail->{"type$i"},
+			     rev => $changedetail->{"rev$i"}
+	    };
+	}
+	print_patch(@changed);
+    }
 
     print "--\n";
     print "\n";
@@ -197,6 +234,7 @@ Syntax: $0 [-c changelist# | -a] $0 > patch-file
 EOF
 	    ;
 
+$PerforceLink::DEBUG = $ENV{P4LINK_DEBUG};
 my @opened_args = ("...");
 unshift @opened_args, "-c", $opt_c if ($opt_c);
 my @opened = p4_recv("opened", @opened_args);
