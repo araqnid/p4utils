@@ -107,7 +107,7 @@ sub strip_expansion_hunks($$) {
 		}
 		@hunk = ();
 		$state = 'outside';
-		print OUTPUT;
+		$output->print($_);
 	    }
 	}
 	#print "$oldstate $state : $_\n";
