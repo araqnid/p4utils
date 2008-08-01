@@ -10,8 +10,9 @@ use IO::Pipe;
 use vars qw(@ISA @EXPORT_OK $DEBUG %EXPORT_TAGS);
 
 @ISA = qw(Exporter);
-@EXPORT_OK = qw(p4_recv p4_send p4_exec marshal unmarshal);
-%EXPORT_TAGS = (p4 => [qw|p4_recv p4_send p4_exec|], marshal => [qw|marshal unmarshal|]);
+@EXPORT_OK = qw(p4_recv p4_recv_raw p4_send p4_exec marshal unmarshal);
+%EXPORT_TAGS = (p4 => [qw|p4_recv p4_recv_raw p4_send p4_exec|], marshal => [qw|marshal unmarshal|]);
+$DEBUG = $ENV{P4LINK_DEBUG};
 
 sub decode_exitstatus($) {
     my $status = shift;
@@ -184,8 +185,22 @@ sub p4_recv {
     $pipe->reader;
     print STDERR "** $pid: RECV p4 $subcommand @args\n" if ($DEBUG);
     my @objects;
-    while (!$pipe->eof) {
-	push @objects, unmarshal($pipe);
+    if ($subcommand eq 'diff') {
+	while (!$pipe->eof) {
+	    push @objects, unmarshal($pipe);
+	    my $line;
+	    my $output = '';
+	    # FIXME need to be able to somehow detect the end of the diff output
+	    while (defined($line = $pipe->getline)) {
+		$output .= $line;
+	    }
+	    push @objects, $output;
+	}
+    }
+    else {
+	while (!$pipe->eof) {
+	    push @objects, unmarshal($pipe);
+	}
     }
     $pipe->close;
     waitpid $pid, 0;
@@ -205,6 +220,40 @@ sub p4_recv {
     else {
 	return $objects[0];
     }
+}
+
+sub p4_recv_raw {
+    my($subcommand, @args) = @_;
+    my $pipe = IO::Pipe->new;
+    my $pid = fork;
+    die "fork: $!\n" unless (defined $pid);
+    if ($pid == 0) {
+	# Child process
+	$pipe->writer;
+	open(STDOUT, ">&".$pipe->fileno) or die "Unable to reopen stdout to pipe: $!\n";
+	exec "p4", $subcommand, @args or die "Unable to exec p4: $!\n";
+    }
+    $pipe->reader;
+    print STDERR "** $pid: RECV-RAW p4 $subcommand @args\n" if ($DEBUG);
+    my $output = '';
+    my $buffer;
+    my $nbytes;
+    while ($nbytes = $pipe->sysread($buffer, 16384)) {
+	$output .= $buffer;
+    }
+    $pipe->close;
+    waitpid $pid, 0;
+    my $status = $?;
+
+    if ($status == 0) {
+	print STDERR "** $pid: DONE p4 $subcommand @args\n" if ($DEBUG);
+    }
+    else {
+	print STDERR "** $pid: ".decode_exitstatus($status)." p4 $subcommand @args\n" if ($DEBUG);
+	croak "Getting data from p4 $subcommand failed";
+    }
+
+    return $output;
 }
 
 sub p4_send($$) {

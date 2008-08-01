@@ -1,0 +1,11 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use PerforceLink::ApplyPatch;
+
+for (@ARGV) {
+    PerforceLink::ApplyPatch::apply_patchfile($_);
+}

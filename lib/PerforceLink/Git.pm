@@ -32,7 +32,7 @@ use constant FILETYPE_ALIASES => {
     "xutf16" => ["utf16", "x"],
 };
 use base qw(Class::Accessor);
-__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts change_charset));
+__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs mirrorspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts change_charset));
 
 sub new {
     my $pkg = shift;
@@ -403,6 +403,7 @@ sub fetch_p4_changes {
 
     if ($fast_import_ctx) {
 	$this->git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
+	select STDOUT;
     }
 
     return $last_change && $last_change->{id};
@@ -506,6 +507,7 @@ sub save_config {
 	$this->remote_config(lc($envvar), $ENV{$envvar}) if ($ENV{$envvar});
     }
     $this->set_remote_config_collection("fetch", map { $_->[0] eq $_->[1] ? $_->[0] : "$_->[0]:$_->[1]" } @{$this->branchspecs});
+    $this->set_remote_config_collection("mirror", map { "$_->[0]=$_->[1]" } @{$this->mirrorspecs});
     $this->remote_config("change-charset", $this->change_charset) if ($this->change_charset);
 }
 
@@ -520,6 +522,7 @@ sub load_config {
 	$ENV{$envvar} ||= $value if ($value);
     }
     $this->branchspecs([ map { my @a = split(/:/, $_, 2); @a == 1 ? [$a[0], $a[0]] : \@a } $this->get_remote_config_collection("fetch") ]);
+    $this->mirrorspecs([ map { [split(/=/, $_, 2)] } $this->get_remote_config_collection("mirror") ]);
     $this->change_charset($this->get_remote_config_optional("change-charset"));
 }
 
@@ -531,6 +534,50 @@ sub to_utf8 {
     }
     else {
 	return $text;
+    }
+}
+
+sub get_tip {
+    my $this = shift;
+    my $git_ref = shift;
+    try {
+	return [split(/\s+/, $this->git_repo->command_oneline("show-ref", $git_ref))]->[0];
+    } catch Git::Error::Command with {
+	return undef;
+    }
+}
+
+sub update_mirrors {
+    my $this = shift;
+    my $last_change_id = shift;
+    my $update_reason = $last_change_id ? ("from ".$this->p4base." \@$last_change_id") : ("from ".$this->p4base);
+    for (@{$this->mirrorspecs}) {
+	my($p4_branch, $git_branch) = @$_;
+	my $p4_tip_commit = $this->get_tip("refs/remotes/".$this->remotename."/$p4_branch");
+	if (!$p4_tip_commit) {
+	    printf(" ? [not imported]    %-10s\n", $p4_branch);
+	    next;
+	}
+	my $git_tip_commit = $this->get_tip("refs/heads/$git_branch");
+	if (!$git_tip_commit) {
+	    printf(" * [new branch]      %-10s -> %-10s\n", $p4_branch, $git_branch);
+	    $this->git_repo->command_noisy("update-ref", "-m", $update_reason, "refs/heads/$git_branch", $p4_tip_commit);
+	    $this->git_repo->command_noisy("config", "branch.$git_branch.p4-remote", $this->remotename);
+	}
+	elsif ($git_tip_commit eq $p4_tip_commit) {
+	    printf(" = [up to date]      %-10s -> %-10s\n", $p4_branch, $git_branch);
+	}
+	else {
+	    my $fast_forward = grep { $_ eq "-$git_tip_commit" } $this->git_repo->command("rev-list", "--boundary", $p4_tip_commit, "--not", $git_tip_commit);
+	    if ($fast_forward) {
+		printf("   %s..%s  %-10s -> %-10s\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
+		$this->git_repo->command_noisy("update-ref", "-m", "$update_reason (fast forward)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
+	    }
+	    else {
+		printf(" + %s..%s  %-10s -> %-10s (forced update)\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
+		$this->git_repo->command_noisy("update-ref", "-m", "$update_reason (forced update)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
+	    }
+	}
     }
 }
 

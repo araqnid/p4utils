@@ -1,0 +1,78 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use PerforceLink qw(:p4);
+use PerforceLink::ApplyPatch;
+use Getopt::Std;
+use Date::Parse;
+use Date::Format;
+use vars qw($opt_n);
+
+our $tmpdir = $ENV{TMPDIR} || "/tmp";
+
+getopts('n') or die "Syntax: $0 [-n] [patch-file...]\n";
+
+my @sections;
+my $section;
+while (<>) {
+    chomp;
+    if (/^From (\S+) \S{3} \S{3} \d+ \d+:\d+:\d+ \d+$/) {
+	my $tempfile = sprintf("%s/msg%X%X%X", $tmpdir, $$, time, rand() * 0x10000);
+	open(OUTPUT, ">$tempfile") or die "Unable to write $tempfile: $!\n";
+	$section = { tempfile => $tempfile };
+	push @sections, $section;
+    }
+    elsif ($section) {
+	print OUTPUT "$_\n";
+    }
+}
+
+close OUTPUT if $section;
+
+for $section (@sections) {
+    open(INPUT, $section->{tempfile}) or die "Unable to read $section->{tmpefile}: $!\n";
+    my %hdrs;
+    while (<INPUT>) {
+	chomp;
+	s/\r$//;
+	last unless (/\S/);
+	if (/^([A-Za-z][A-Za-z0-9-]+):\s*(.+)/) {
+	    my($name, $value) = ($1, $2);
+	    $hdrs{lc($name)} = $value;
+	}
+    }
+
+    my $patch_description = $hdrs{subject};
+    $patch_description =~ s{^\[PATCH[^\]]*\] }{};
+    my $author = $hdrs{from};
+
+    my $patch_message = '';
+    while (<INPUT>) {
+	last if (/^---/);
+	$patch_message .= "$_\n";
+    }
+
+    print "Patch: $patch_description ($author)\n";
+    my %new_change_spec;
+    $new_change_spec{code} = 'stat';
+    $new_change_spec{Change} = 'new';
+    $new_change_spec{Description} = join("\n\n", grep { defined($_) && /\S/ } $patch_description, $patch_message);
+
+    my $new_change;
+    for (p4_send("change", \%new_change_spec)) {
+	if ($_->{data} =~ /Change (\d+) created/) {
+	    $new_change = $1;
+	    print "$new_change: $_->{data}\n";
+	    last;
+	}
+    }
+
+    PerforceLink::ApplyPatch::apply_patch(\*INPUT, changelist => $new_change);
+
+    unless ($opt_n) {
+	p4_exec("submit", "-c", $new_change);
+    }
+}

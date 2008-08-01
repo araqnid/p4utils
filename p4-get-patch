@@ -1,0 +1,263 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use PerforceLink qw(:p4);
+use Getopt::Std;
+use Date::Parse;
+use Date::Format;
+use Cwd;
+use Fcntl;
+use vars qw($opt_c $opt_a $opt_s);
+
+our $dir = getcwd;
+
+sub diffstat_available() {
+    my $pid = fork;
+    die "Cannot fork: $!\n" unless (defined($pid));
+    if ($pid == 0) {
+	open(STDIN, "</dev/null");
+	open(STDOUT, ">/dev/null");
+	exec "diffstat";
+    }
+    waitpid($pid, 0);
+    return $? == 0;
+}
+
+sub print_patch(@) {
+    my @opened = @_;
+    my $tmpfile;
+    my $oldfh;
+    if (diffstat_available) {
+	my $tmpdir = $ENV{TMPDIR} || "/tmp";
+	$tmpfile = "$tmpdir/p4getpatch".sprintf("%X%X%X", time, $$, rand() * 0x10000);
+	sysopen(TMPFILE, $tmpfile, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0600) or die "Unable to write $tmpfile: $!\n";
+	$oldfh = select TMPFILE;
+    }
+
+    for my $opened (@opened) {
+	my $location = p4_recv("where", $opened->{depotFile});
+	my $filename = $location->{path};
+	$filename =~ s{^\Q$dir/}{};
+	$opened->{output_filename} = $filename;
+
+	if ($opened->{action} eq 'edit' || $opened->{action} eq 'integrate') {
+	    my($header, $output);
+	    if ($opened->{clientFile}) {
+		($header, $output) = p4_recv("diff", "-du", $opened->{clientFile});
+	    }
+	    else {
+		($header, $output) = split(/\n/, p4_recv_raw("diff2", "-du", map { "$opened->{depotFile}#$_" } $opened->{rev}-1, $opened->{rev}), 2);
+	    }
+	    print "diff --p4 a/$filename b/$filename\n";
+	    print "$opened->{action} $opened->{type} $opened->{depotFile}#$opened->{rev}\n";
+
+	    if ($output) {
+		print "--- a/$filename\n";
+		print "+++ b/$filename\n";
+
+		print $output;
+	    }
+	    else {
+		print "Files a/$filename and b/$filename are identical\n";
+	    }
+	}
+	elsif ($opened->{action} eq 'add' || $opened->{action} eq 'branch') {
+	    print "diff --p4 a/$filename b/$filename\n";
+	    print "$opened->{action} $opened->{type} $opened->{depotFile}#$opened->{rev}\n";
+	    print "--- /dev/null\n";
+	    print "+++ b/$filename\n";
+
+	    if ($opened->{clientFile}) {
+		open(FILE, $location->{path}) or die "Unable to read $location->{path}: $!\n";
+		my $lines = 0;
+		while (<FILE>) {
+		    ++$lines;
+		}
+		if ($lines == 0) {
+		    die "Empty file cannot be put into a patch\n";
+		}
+		elsif ($lines == 1) {
+		    print "\@\@ -0,0 +$lines \@\@\n";
+		}
+		else {
+		    print "\@\@ -0,0 +1,$lines \@\@\n";
+		}
+		seek(FILE, 0, 0);
+		my $has_newline;
+		while (<FILE>) {
+		    $has_newline = chomp;
+		    print "+$_\n";
+		}
+		close(FILE);
+		print "\\ No newline at end of file\n" unless ($has_newline);
+	    }
+	    else {
+		my $file_content = p4_recv_raw("print", "-q", "$opened->{depotFile}#$opened->{rev}");
+		my @lines = split(/\n/, $file_content);
+		if (@lines == 0) {
+		    die "Empty file cannot be put into a patch\n";
+		}
+		elsif (@lines == 1) {
+		    print "\@\@ -0,0 +1 \@\@\n";
+		}
+		else {
+		    print "\@\@ -0,0 +1,".scalar(@lines)." \@\@\n";
+		}
+		print join("", map { "+$_\n" } @lines);
+		print "\\ No newline at end of file\n" unless ($file_content =~ /\n\z/);
+	    }
+	}
+	elsif ($opened->{action} eq 'delete') {
+	    print "diff --p4 a/$filename b/$filename\n";
+	    print "$opened->{action} $opened->{type} $opened->{depotFile}#$opened->{rev}\n";
+	    print "--- a/$filename\n";
+	    print "+++ /dev/null\n";
+
+	    my($header, @data) = p4_recv('print', $opened->{depotFile});
+	    my $content = join('', map { $_->{data} } @data);
+	    my @lines = split(/\n/, $content);
+	    my $line_count = scalar @lines;
+	    if ($line_count == 0) {
+		print "Empty file cannot be deleted in a patch\n";
+	    }
+	    elsif ($line_count == 1) {
+		print "\@\@ -1 +0,0 \@\@\n";
+	    }
+	    else {
+		print "\@\@ -1,$line_count +0,0 \@\@\n";
+	    }
+	    for (@lines) {
+		print "-$_\n";
+	    }
+	    if ($content !~ /\n$/) {
+		print "\\ No newline at end of file\n";
+	    }
+	}
+    }
+
+    if ($tmpfile) {
+	select $oldfh;
+	close TMPFILE;
+
+	open(DIFFSTAT, "diffstat -p1 '$tmpfile' |") or die "Unable to open diffstat command: $!\n";
+	while (<DIFFSTAT>) {
+	    print;
+	}
+	close(DIFFSTAT);
+
+	for (@opened) {
+	    if ($_->{action} eq 'add') {
+		print " create file $_->{output_filename}\n";
+	    }
+	    elsif ($_->{action} eq 'delete') {
+		print " delete file $_->{output_filename}\n";
+	    }
+	}
+	print "\n";
+
+	open(TMPFILE, $tmpfile) or die "Unable to re-read $tmpfile: $!\n";
+	while (<TMPFILE>) {
+	    print;
+	}
+	close(TMPFILE);
+
+	unlink $tmpfile;
+    }
+}
+
+sub print_change_as_patch($$@) {
+    my($changeno, $patchindex, @opened) = @_;
+    my($changeinfo) = p4_recv("change", "-o", $changeno);
+    die $changeinfo->data if ($changeinfo->{code} eq 'error');
+
+    my $userid = $changeinfo->{User};
+    my($userinfo) = p4_recv("user", "-o", $userid);
+    die $userinfo->data if ($userinfo->{code} eq 'error');
+
+    my $datestring = $changeinfo->{Date};
+    my $date = str2time($datestring);
+
+    my($subject, $residual) = split(/\n/, $changeinfo->{Description}, 2);
+    $residual =~ s/^\n+//;
+
+    my $filename;
+    if ($patchindex) {
+	my $patch_name = $subject;
+	$patch_name =~ s/[^0-9A-Za-z]+/-/g;
+	$patch_name =~ s/^-//;
+	$filename = sprintf("%04d-%s.patch", $patchindex, substr($patch_name, 0, 50));
+	open(OUTPUT, ">$filename") or die "Unable to write $filename\n";
+	select OUTPUT;
+    }
+
+    print "From $changeno ".time2str("%a %b %d %H:%M:%S %Y", time)."\n";
+    print "From: $userinfo->{FullName} <$userinfo->{Email}>\n";
+    print "Date: ".time2str("%a, %d %b %Y %H:%M:%S %z", $date)."\n";
+    print "Subject: [PATCH] $subject\n\n$residual\n";
+    for (my $i = 0; $changeinfo->{"Jobs$i"}; $i++) {
+	my $job = $changeinfo->{"Jobs$i"};
+	print "Fixes: $job\n";
+    }
+    print "---\n";
+
+    if ($changeinfo->{Status} eq 'pending') {
+	print_patch(@opened);
+    }
+    else {
+	my($changedetail) = p4_recv("describe", "-s", $changeno);
+	my @changed;
+	for (my $i = 0; $changedetail->{"action$i"}; $i++) {
+	    push @changed, { action => $changedetail->{"action$i"},
+			     depotFile => $changedetail->{"depotFile$i"},
+			     type => $changedetail->{"type$i"},
+			     rev => $changedetail->{"rev$i"}
+	    };
+	}
+	print_patch(@changed);
+    }
+
+    print "--\n";
+    print "\n";
+
+    if ($filename) {
+	close(OUTPUT);
+	print STDOUT "Wrote $filename\n";
+    }
+}
+
+getopts('c:as') && @ARGV == 0 or die <<EOF;
+Syntax: $0 [-c changelist# | -a] $0 > patch-file
+        $0 [-c changelist# | -a] -s
+EOF
+	    ;
+
+my @opened_args = ("...");
+unshift @opened_args, "-c", $opt_c if ($opt_c);
+my @opened = p4_recv("opened", @opened_args);
+my $changeno = $opt_c;
+if (!$changeno) {
+    my %changes = map { ($_, 1) } map { $_->{change} } @opened;
+    my @distinct_changes = keys %changes;
+    if (@distinct_changes == 1) {
+	print_change_as_patch($distinct_changes[0], $opt_s ? 1 : 0, @opened);
+    }
+    elsif ($opt_a) {
+	if (grep { $_ eq 'default' } @distinct_changes) {
+	    die "Can't produce a patchset that mixes numbered and default changelist files\n";
+	}
+	my $patchindex = 0;
+	for $changeno (sort { $a <=> $b } @distinct_changes) {
+	    print_change_as_patch($changeno, ($opt_s ? ++$patchindex : 0), grep { $_->{change} == $changeno } @opened);
+	}
+	exit;
+    }
+    else {
+	die "Found open files covering multiple changelists, please specify -a for all of them, or a single changelist with -c: ".join(", ", @distinct_changes)."\n";
+    }
+}
+else {
+    print_change_as_patch($changeno, $opt_s ? 1 : 0, @opened);
+}

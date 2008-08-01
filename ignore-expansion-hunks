@@ -1,0 +1,19 @@
+#!/usr/bin/perl -w
+
+require 5;
+use strict;
+use warnings;
+use utf8;
+use PerforceLink::StripDiff;
+
+$| = 1;
+if (@ARGV) {
+    PerforceLink::StripDiff::strip_expansion_hunks(\*STDIN, \*STDOUT);
+}
+else {
+    for my $filename (@ARGV) {
+	open(INPUT, $filename) or die "Unable to read $filename: $!\n";
+	PerforceLink::StripDiff::strip_expansion_hunks(\*INPUT, \*STDOUT);
+	close(INPUT);
+    }
+}

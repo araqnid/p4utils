@@ -21,7 +21,7 @@ my $subcommand = shift;
 
 if ($subcommand eq 'clone') {
     my %opts;
-    getopts("o:d:m:nC:B:T:tsg:e:", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] [-s] [-g graft-file] [-e p4-change-charset] perforce-root-dir [branchspec...]\n";
+    getopts("o:d:m:nC:B:T:tsg:e:", \%opts) && @ARGV >= 1 or die "Syntax: $0 clone [-o fast-import-dump|-d git-repo] [-n] [-m max-changes] [-t] [-C commits-chkpt-interval] [-B bytes-chkpt-interval] [-T time-chkpt-interval] [-s] [-g graft-file] [-e p4-change-charset] perforce-root-dir [branchspec|mirrorspec...]\n";
 
     my $p4base = shift;
     $p4base =~ s{/(\.\.\.)?$}{};
@@ -71,24 +71,41 @@ if ($subcommand eq 'clone') {
     $p4link->grafts($opts{g});
     $p4link->change_charset($opts{e});
     my @branchspecs;
+    my @mirrorspecs;
     for (@ARGV) {
-	m{([^:]+)(?::([^:]+))?} or die "Invalid branch spec: $_\n";
-	my($subdir_pattern, $branch_pattern) = ($1, $2);
-	$branch_pattern ||= $subdir_pattern;
-	push @branchspecs, [$subdir_pattern, $branch_pattern];
+	if (m{([^=]+)=([^=]+)}) {
+	    my($p4_branch, $git_branch) = ($1, $2);
+	    push @mirrorspecs, [$p4_branch, $git_branch];
+	}
+	elsif (m{([^:]+)(?::([^:]+))?}) {
+	    my($subdir_pattern, $branch_pattern) = ($1, $2);
+	    $branch_pattern ||= $subdir_pattern;
+	    push @branchspecs, [$subdir_pattern, $branch_pattern];
+	}
+	else {
+	    die "Doesn't look like a branchspec nor a mirrorspec: $_\n";
+	}
     }
 
     $p4link->branchspecs(\@branchspecs);
+    $p4link->mirrorspecs(\@mirrorspecs);
 
     $p4link->save_config;
 
     my $last_change = $p4link->fetch_p4_changes() or die "No changes found\n";
 
     if ($p4link->git_repo) {
-	my $master_branch = @branchspecs ? $branchspecs[0]->[1] : "master";
-	$p4link->git_repo->command_noisy("config", "branch.master.p4-remote", $remotename);
-	$p4link->git_repo->command_noisy("config", "branch.master.rebase", $master_branch);
-	$p4link->git_repo->command_noisy("branch", "master", "refs/remotes/$remotename/$master_branch");
+	if (@{$p4link->mirrorspecs}) {
+	    $p4link->update_mirrors($last_change);
+	    my $primary_branch = $p4link->mirrorspecs->[0]->[1];
+	    $p4link->git_repo->command_noisy("symbolic-ref", "HEAD", "refs/heads/$primary_branch");
+	}
+	else {
+	    my $master_branch = @branchspecs ? $branchspecs[0]->[1] : "master";
+	    $p4link->git_repo->command_noisy("config", "branch.master.p4-remote", $remotename);
+	    $p4link->git_repo->command_noisy("config", "branch.master.rebase", $master_branch);
+	    $p4link->git_repo->command_noisy("branch", "master", "refs/remotes/$remotename/$master_branch");
+	}
 	$p4link->git_repo->command_noisy("checkout") unless ($opts{n});
     }
 }
@@ -138,6 +155,9 @@ elsif ($subcommand eq 'fetch' || $subcommand eq 'pull') {
     }
 
     my $last_change = $p4link->fetch_p4_changes();
+    if (@{$p4link->mirrorspecs}) {
+	$p4link->update_mirrors($last_change);
+    }
 
     if ($subcommand eq 'pull') {
 	if ($p4link->git_repo->command_oneline("config", "core.bare") eq 'false') {
