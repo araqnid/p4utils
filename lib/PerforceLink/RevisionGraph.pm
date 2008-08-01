@@ -62,7 +62,7 @@ sub get_integration {
     my $this = shift;
     my $revision = shift;
 
-    my($integration) = grep { $_->{how} =~ /(branch|copy|integrate|edit|merge) from|ignored/ } @{$revision->{aux}};
+    my($integration) = grep { $_->{how} =~ /^((branch|copy|integrate|edit|merge) from|ignored)$/ } @{$revision->{aux}};
     return $integration;
 }
 
