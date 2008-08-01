@@ -15,8 +15,6 @@ our $tmpdir = $ENV{TMPDIR} || "/tmp";
 
 getopts('n') or die "Syntax: $0 [-n] [patch-file...]\n";
 
-$PerforceLink::DEBUG = $ENV{P4LINK_DEBUG};
-
 my @sections;
 my $section;
 while (<>) {

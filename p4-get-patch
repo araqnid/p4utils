@@ -234,7 +234,6 @@ Syntax: $0 [-c changelist# | -a] $0 > patch-file
 EOF
 	    ;
 
-$PerforceLink::DEBUG = $ENV{P4LINK_DEBUG};
 my @opened_args = ("...");
 unshift @opened_args, "-c", $opt_c if ($opt_c);
 my @opened = p4_recv("opened", @opened_args);

@@ -12,6 +12,7 @@ use vars qw(@ISA @EXPORT_OK $DEBUG %EXPORT_TAGS);
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(p4_recv p4_recv_raw p4_send p4_exec marshal unmarshal);
 %EXPORT_TAGS = (p4 => [qw|p4_recv p4_recv_raw p4_send p4_exec|], marshal => [qw|marshal unmarshal|]);
+$DEBUG = $ENV{P4LINK_DEBUG};
 
 sub decode_exitstatus($) {
     my $status = shift;

@@ -6,8 +6,6 @@ use warnings;
 use utf8;
 use PerforceLink::ApplyPatch;
 
-$PerforceLink::DEBUG = $ENV{P4LINK_DEBUG};
-
 for (@ARGV) {
     PerforceLink::ApplyPatch::apply_patchfile($_);
 }
