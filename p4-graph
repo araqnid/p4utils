@@ -6,12 +6,16 @@ use warnings;
 use utf8;
 use PerforceLink qw(:p4);
 use PerforceLink::RevisionGraph;
-
-our $graph = PerforceLink::RevisionGraph->new;
+use PerforceLink::PrettyGraph;
 
 sub print_revision {
-    my($depotfile, $filerev, $changelist, $client, $user, $action, $filetype, $message) = @_;
-    print "[$user] $depotfile #$filerev $action\@$changelist $message\n";
+    my($prefix, $depotfile, $filerev, $changelist, $client, $user, $action, $filetype, $message) = @_;
+    if ($depotfile) {
+	print "$prefix [$user] $depotfile #$filerev $action\@$changelist $message\n";
+    }
+    else {
+	print "$prefix\n";
+    }
 }
 
 my $start_file = shift;
@@ -19,9 +23,10 @@ my($fstat) = p4_recv("fstat", $start_file);
 die $fstat->{data} if ($fstat->{code} eq 'error');
 my $depotfile = $fstat->{depotFile};
 
+my $graph = PerforceLink::PrettyGraph->new;
 if ($start_file =~ /#(\d+)$/) {
-    $graph->do_walk($depotfile, $1, \&print_revision);
+    $graph->print_graph($depotfile, $1, \&print_revision);
 }
 else {
-    $graph->do_walk($depotfile, undef, \&print_revision);
+    $graph->print_graph($depotfile, undef, \&print_revision);
 }

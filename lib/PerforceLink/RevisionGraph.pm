@@ -58,12 +58,21 @@ sub get_filelog_previous {
     return [grep { $_->{rev} < $revision->{rev} } @$filelog]->[0];
 }
 
+sub get_integration {
+    my $this = shift;
+    my $revision = shift;
+
+    my($integration) = grep { $_->{how} =~ /(branch|copy|integrate) from/ } @{$revision->{aux}};
+    return $integration;
+}
+
 sub callback {
     my $this = shift;
     my $callback = shift;
     my $revision = shift;
 
-    &$callback(map { $revision->{$_} } qw|file rev changelist client user action filetype description|);
+    my $integration = $this->get_integration($revision);
+    &$callback((map { $revision->{$_} } qw|file rev changelist client user action filetype description|), $integration ? ($integration->{file}) : (undef));
 }
 
 sub get_revision_parents {
@@ -73,7 +82,7 @@ sub get_revision_parents {
     my @parents;
     my $direct_parent = $this->get_filelog_previous($revision);
 
-    my($integration) = grep { $_->{how} =~ /(branch|copy|integrate) from/ } @{$revision->{aux}};
+    my $integration = $this->get_integration($revision);
     my $alt_parent = $integration && $this->get_filelog_revision($integration->{file}, $integration->{end_rev});
 
     return grep { defined($_) } ($direct_parent, $alt_parent);
