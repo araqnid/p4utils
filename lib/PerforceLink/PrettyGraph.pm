@@ -81,6 +81,10 @@ sub print_revision {
     elsif ($action eq 'add') {
 	$this->{branch_live}->[$branchidx] = 0;
     }
+
+    while (@{$this->{branch_file}} && !$this->{branch_live}->[$#{$this->{branch_file}}]) {
+	pop @{$this->{branch_file}};
+    }
 }
 
 sub print_graph {
