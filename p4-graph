@@ -5,186 +5,23 @@ use strict;
 use warnings;
 use utf8;
 use PerforceLink qw(:p4);
+use PerforceLink::RevisionGraph;
 
-my @branches;
+our $graph = PerforceLink::RevisionGraph->new;
 
-sub show_file {
-    my($depotfile, $srev, $erev) = @_;
-    my($filelog) = p4_recv("filelog", $depotfile);
-
-    for (my $i = 0; $filelog->{"rev$i"}; $i++) {
-	my $filerev = $filelog->{"rev$i"};
-	if ($srev && $srev ne '#none' && $srev =~ /^\#(\d+)/) {
-	    next unless $filerev >= $1;
-	}
-	if ($erev && $erev =~ /^\#(\d+)/) {
-	    next unless $filerev <= $1;
-	}
-	my $message = $filelog->{"desc$i"};
-	my $changelist = $filelog->{"change$i"};
-	my $user = $filelog->{"user$i"};
-	my $action = $filelog->{"action$i"};
-
-	my $branchidx;
-	for my $k (0..$#branches) {
-	    if ($branches[$k] eq $depotfile) {
-		$branchidx = $k;
-	    }
-	}
-	die "Branch not found: $depotfile\n" unless (defined ($branchidx));
-
-	#print "  depotfile=$depotfile\n  branchidx=$branchidx branches=@branches\n";
-	print join('', map { $_ == $branchidx ? '* ' : '| ' } 0..$#branches);
-
-	print "[$user] $depotfile #$filerev $action\@$changelist $message\n";
-
-	my $taken_from;
-	if ($action eq 'branch' || $action eq 'integrate' || $action eq 'add') {
-	    for (my $j = 0; $filelog->{"how$i,$j"}; $j++) {
-		my $how = $filelog->{"how$i,$j"};
-		my $file = $filelog->{"file$i,$j"};
-		my $srev = $filelog->{"srev$i,$j"};
-		my $erev = $filelog->{"erev$i,$j"};
-		if ($how =~ /from/ || $how eq 'ignored') {
-		    $taken_from = [$file, $how, $srev, $erev];
-		}
-	    }
-	}
-
-	if ($taken_from) {
-	    my $from_branchidx;
-	    for ($from_branchidx = 0; $from_branchidx <= $#branches; $from_branchidx++) {
-		last if ($branches[$from_branchidx] eq $taken_from->[0]);
-	    }
-
-	    if ($from_branchidx > $#branches) {
-		if ($filerev == 1) {
-		    # First revision of current file taken from previously-unseen branch, so just replace.
-		    splice @branches, $branchidx, 1, $taken_from->[0];
-		}
-		else {
-		    # new branch
-		    if (@branches) {
-			for my $k (0..$#branches) {
-			    if ($k == $branchidx) {
-				print '|\\';
-			    }
-			    elsif ($k > $branchidx) {
-				print ' \\';
-			    }
-			    else {
-				print ' |';
-			    }
-			}
-			print "\n";
-		    }
-		    splice @branches, $branchidx+1, 0, $taken_from->[0];
-		}
-		show_file($taken_from->[0], $taken_from->[2], $taken_from->[3]);
-	    }
-	    else {
-		if ($filerev == 1) {
-		    # First revision of current file taken from existing branch
-		    if ($branchidx > $from_branchidx) {
-			# line from right to left
-			for my $linepos ($from_branchidx..$branchidx-1) {
-			    for my $k (0..$#branches) {
-				if ($k < $linepos) {
-				    print '| ';
-				}
-				elsif ($k == $linepos) {
-				    print '|/';
-				}
-				elsif ($k == $#branches) {
-				    print '  ';
-				}
-				else {
-				    print ' /';
-				}
-			    }
-			    print "\n";
-			}
-		    }
-		    else {
-			# line from left to right
-			for my $linepos ($branchidx..$from_branchidx-1) {
-			    for my $k (0..$#branches) {
-				if ($k == $linepos) {
-				    print '|\\';
-				}
-				elsif ($branches[$k] eq 'dead') {
-				    print '  ';
-				}
-				elsif ($k > $linepos) {
-				    print '/ ';
-				}
-				else {
-				    print '| ';
-				}
-			    }
-			    print "\n";
-			}
-		    }
-
-		    splice(@branches, $branchidx, 1);
-		}
-		else {
-		    #print "  taken_from<existing>=$taken_from->[0]\n  branches=@branches\n";
-		    # existing branch
-		    if ($branchidx > $from_branchidx) {
-			# line from right to left
-			for my $linepos ($from_branchidx..$branchidx-1) {
-			    for my $k (0..$#branches) {
-				if ($k < $linepos) {
-				    print '| ';
-				}
-				elsif ($k == $linepos) {
-				    print '/ ';
-				}
-				else {
-				    print '| ';
-				}
-			    }
-			    print "\n";
-			}
-		    }
-		    else {
-			# line from left to right
-			for my $linepos ($branchidx..$from_branchidx-1) {
-			    for my $k (0..$#branches) {
-				if ($k < $linepos) {
-				    print '| ';
-				}
-				elsif ($k == $linepos) {
-				    print '|\\';
-				}
-				else {
-				    print '| ';
-				}
-			    }
-			    print "\n";
-			}
-		    }
-		}
-	    }
-	}
-	elsif ($filerev == 1) {
-	    # root change
-	    #print "Clearing after root change\n";
-	    splice(@branches, $branchidx, 1);
-	}
-    }
+sub print_revision {
+    my($depotfile, $filerev, $changelist, $client, $user, $action, $filetype, $message) = @_;
+    print "[$user] $depotfile #$filerev $action\@$changelist $message\n";
 }
 
-$PerforceLink::DEBUG = $ENV{P4UTILS_DEBUG};
 my $start_file = shift;
 my($fstat) = p4_recv("fstat", $start_file);
 die $fstat->{data} if ($fstat->{code} eq 'error');
 my $depotfile = $fstat->{depotFile};
-push @branches, $depotfile;
+
 if ($start_file =~ /#(\d+)$/) {
-    show_file($depotfile, "#none", "#$1");
+    $graph->do_walk($depotfile, $1, \&print_revision);
 }
 else {
-    show_file($depotfile);
+    $graph->do_walk($depotfile, undef, \&print_revision);
 }
