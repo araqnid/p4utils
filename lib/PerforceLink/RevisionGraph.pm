@@ -17,7 +17,7 @@ sub fetch_filelog {
     my @filelog;
     for (my $i = 0; $raw_filelog->{"rev$i"}; $i++) {
 	my %entry = ( file => $file );
-	@entry{qw|rev description changelist client user action filetype digest filesize|} = map { $raw_filelog->{"$_$i"} } qw|rev desc change client user action type digest fileSize|;
+	@entry{qw|rev description changelist client user action filetype digest filesize time|} = map { $raw_filelog->{"$_$i"} } qw|rev desc change client user action type digest fileSize time|;
 	push @filelog, \%entry;
 
 	my @aux;
@@ -62,7 +62,7 @@ sub get_integration {
     my $this = shift;
     my $revision = shift;
 
-    my($integration) = grep { $_->{how} =~ /(branch|copy|integrate) from/ } @{$revision->{aux}};
+    my($integration) = grep { $_->{how} =~ /(branch|copy|integrate|edit|merge) from|ignored/ } @{$revision->{aux}};
     return $integration;
 }
 
@@ -72,7 +72,7 @@ sub callback {
     my $revision = shift;
 
     my $integration = $this->get_integration($revision);
-    &$callback((map { $revision->{$_} } qw|file rev changelist client user action filetype description|), $integration ? ($integration->{file}) : (undef));
+    &$callback((map { $revision->{$_} } qw|file rev changelist client user action filetype description time|), $integration ? ($integration->{file}) : (undef));
 }
 
 sub get_revision_parents {

@@ -4,14 +4,15 @@ require 5;
 use strict;
 use warnings;
 use utf8;
+use Date::Format;
 use PerforceLink qw(:p4);
 use PerforceLink::RevisionGraph;
 use PerforceLink::PrettyGraph;
 
 sub print_revision {
-    my($prefix, $depotfile, $filerev, $changelist, $client, $user, $action, $filetype, $message) = @_;
+    my($prefix, $depotfile, $filerev, $changelist, $client, $user, $action, $filetype, $message, $time) = @_;
     if ($depotfile) {
-	print "$prefix [$user] $depotfile #$filerev $action\@$changelist $message\n";
+	print "$prefix Change $changelist on ".time2str("%Y-%m-%d", $time)." $action $filetype by $user\@$client '$message'\n";
     }
     else {
 	print "$prefix\n";

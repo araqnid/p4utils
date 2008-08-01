@@ -38,7 +38,7 @@ sub draw_line {
 sub print_revision {
     my $this = shift;
     my $callback = shift;
-    my($file, $rev, $changelist, $client, $user, $action, $filetype, $description, $aux_file) = @_;
+    my($file, $rev, $changelist, $client, $user, $action, $filetype, $description, $time, $aux_file) = @_;
 
     my $branchidx = $this->find_branch($file);
 
@@ -49,9 +49,7 @@ sub print_revision {
 	$this->{branch_live}->[$branchidx] = 1;
     }
 
-    my $prefix = join(' ', map { $_ == $branchidx ? '*' : $this->{branch_live}->[$_] ? '|' : ' ' } 0..$#{$this->{branch_file}});
-
-    &$callback($prefix, @_);
+    &$callback(join(' ', map { $_ == $branchidx ? $action eq 'delete' ? 'X' : '*' : $this->{branch_live}->[$_] ? '|' : ' ' } 0..$#{$this->{branch_file}}), @_);
 
     if ($action eq 'branch') {
 	my $from_branchidx = $this->find_branch($aux_file);
@@ -64,15 +62,20 @@ sub print_revision {
 	}
     }
     elsif ($action eq 'integrate') {
-	my $from_branchidx = $this->find_branch($aux_file);
-	if ($from_branchidx < 0) {
-	    push @{$this->{branch_file}}, $aux_file;
-	    $from_branchidx = $#{$this->{branch_file}};
-	    $this->draw_line($branchidx, $from_branchidx, $callback);
-	    $this->{branch_live}->[$from_branchidx] = 1;
+	if ($aux_file) {
+	    my $from_branchidx = $this->find_branch($aux_file);
+	    if ($from_branchidx < 0) {
+		push @{$this->{branch_file}}, $aux_file;
+		$from_branchidx = $#{$this->{branch_file}};
+		$this->draw_line($branchidx, $from_branchidx, $callback);
+		$this->{branch_live}->[$from_branchidx] = 1;
+	    }
+	    else {
+		$this->draw_line($branchidx, $from_branchidx, $callback);
+	    }
 	}
 	else {
-	    $this->draw_line($branchidx, $from_branchidx, $callback);
+	    die "No aux_file for integrate action $file#$rev\n";
 	}
     }
     elsif ($action eq 'add') {
