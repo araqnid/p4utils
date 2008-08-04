@@ -242,7 +242,13 @@ if (!$changeno) {
     my %changes = map { ($_, 1) } map { $_->{change} } @opened;
     my @distinct_changes = keys %changes;
     if (@distinct_changes == 1) {
-	print_change_as_patch($distinct_changes[0], $opt_s ? 1 : 0, @opened);
+	if ($distinct_changes[0] eq 'default') {
+	    die "You need to put the files into numbered changelists to use -s\n" if ($opt_s);
+	    print_patch(@opened);
+	}
+	else {
+	    print_change_as_patch($distinct_changes[0], $opt_s ? 1 : 0, @opened);
+	}
     }
     elsif ($opt_a) {
 	if (grep { $_ eq 'default' } @distinct_changes) {
@@ -252,7 +258,6 @@ if (!$changeno) {
 	for $changeno (sort { $a <=> $b } @distinct_changes) {
 	    print_change_as_patch($changeno, ($opt_s ? ++$patchindex : 0), grep { $_->{change} == $changeno } @opened);
 	}
-	exit;
     }
     else {
 	die "Found open files covering multiple changelists, please specify -a for all of them, or a single changelist with -c: ".join(", ", @distinct_changes)."\n";
