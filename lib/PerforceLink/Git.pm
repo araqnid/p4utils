@@ -13,6 +13,7 @@ use Carp;
 use Encode;
 use Date::Format;
 use PerforceLink qw(:p4);
+use LockFile::Simple qw(lock unlock trylock);
 # p4 help filetypes
 use constant FILETYPE_ALIASES => {
     "ctext" => ["text", "C"],
@@ -211,6 +212,7 @@ sub fetch_p4_changes {
 	}
     }
 
+    my $locktarget = $this->git_repo->repo_path."/p4-git-xfer.".$this->remotename;
     if ($this->output_file) {
 	if ($this->output_file ne '-') {
 	    open(OUTPUT, ">".$this->output_file) or die "Unable to write ".$this->output_file.": $!\n";
@@ -219,6 +221,7 @@ sub fetch_p4_changes {
     }
     else {
 	croak "Must have a repository or an output file" unless ($this->git_repo);
+	lock($locktarget) or die "Can't obtain lock on $locktarget\n";
 	my @cmd = ("fast-import");
 	push @cmd, "--quiet" unless ($this->debug);
 	push @cmd, "--export-marks=$marksfile";
@@ -404,6 +407,7 @@ sub fetch_p4_changes {
     if ($fast_import_ctx) {
 	$this->git_repo->command_close_pipe($fast_import_pipe, $fast_import_ctx);
 	select STDOUT;
+	unlock($locktarget);
     }
 
     return $last_change && $last_change->{id};

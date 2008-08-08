@@ -12,5 +12,6 @@ WriteMakefile(
 	Carp => undef,
 	Encode => undef,
 	Class::Accessor => undef,
-	Date::Format => undef
+	Date::Format => undef,
+	LockFile::Simple => undef
     } );
