@@ -555,7 +555,7 @@ sub update_mirrors {
     my $this = shift;
     my $last_change_id = shift;
     my $update_reason = $last_change_id ? ("from ".$this->p4base." \@$last_change_id") : ("from ".$this->p4base);
-    for (@{$this->mirrorspecs}) {
+    for (map { $this->match_mirrorspec($_) } @{$this->mirrorspecs}) {
 	my($p4_branch, $git_branch) = @$_;
 	my $p4_tip_commit = $this->get_tip("refs/remotes/".$this->remotename."/$p4_branch");
 	if (!$p4_tip_commit) {
@@ -583,6 +583,47 @@ sub update_mirrors {
 	    }
 	}
     }
+}
+
+sub match_mirrorspec {
+    my $this = shift;
+    my $mirrorspec = shift;
+    my($p4_branch_pattern, $git_branch_pattern) = @$_;
+
+    if ($p4_branch_pattern !~ /\*/) {
+	return [$p4_branch_pattern, $git_branch_pattern];
+    }
+
+    my $remotename = $this->remotename;
+    my @p4_branches = $this->known_branches;
+
+    my @mirrors;
+    for my $p4_branch (@p4_branches) {
+	my $git_branch = $this->patsubst($p4_branch, $p4_branch_pattern, $git_branch_pattern);
+	if ($git_branch) {
+	    push @mirrors, [$p4_branch, $git_branch];
+	}
+    }
+    return @mirrors;
+}
+
+sub patsubst {
+    my $this = shift;
+    my $input = shift;
+    my $matchpattern = shift;
+    my $substpattern = shift;
+
+    my $match_re = $matchpattern;
+    $match_re =~ s{\*}{([^/]*)}g;
+    $match_re = "^$match_re\$";
+    my $output_string = $substpattern;
+    my $index = 1;
+    $output_string =~ s{\*}{"\$".($index++)}ge;
+
+    return undef unless ($input =~ m{$match_re});
+
+    $output_string = eval "qq{$output_string}";
+    return $output_string;
 }
 
 1;
