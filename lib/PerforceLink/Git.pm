@@ -582,14 +582,14 @@ sub update_mirrors {
 	    if ($fast_forward) {
 		if ($this->run_git_hook("update", undef, "refs/heads/$git_branch", $git_tip_commit, $p4_tip_commit)) {
 		    $this->git_repo->command_noisy("update-ref", "-m", "$update_reason (fast forward)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
-		    printf("   %s..%s  %-10s -> %-10s\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
+		    printf("   %s..%s  %-10s -> %-10s\n", $this->abbrev_commit($git_tip_commit), $this->abbrev_commit($p4_tip_commit), $p4_branch, $git_branch);
 		    push @refs_updated, [$git_tip_commit, $p4_tip_commit, "refs/heads/$git_branch"];
 		}
 	    }
 	    else {
 		if ($this->run_git_hook("update", undef, "refs/heads/$git_branch", $git_tip_commit, $p4_tip_commit)) {
 		    $this->git_repo->command_noisy("update-ref", "-m", "$update_reason (forced update)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
-		    printf(" + %s..%s  %-10s -> %-10s (forced update)\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
+		    printf(" + %s..%s  %-10s -> %-10s (forced update)\n", $this->abbrev_commit($git_tip_commit), $this->abbrev_commit($p4_tip_commit), $p4_branch, $git_branch);
 		    push @refs_updated, [$git_tip_commit, $p4_tip_commit, "refs/heads/$git_branch"];
 		}
 	    }
@@ -670,6 +670,12 @@ sub run_git_hook {
     waitpid($hook_pid, 0);
     my $hook_status = $?;
     return $hook_status == 0;
+}
+
+sub abbrev_commit {
+    my $this = shift;
+    my $rev = shift;
+    $this->git_repo->command_oneline("rev-parse", "--short", $rev);
 }
 
 1;
