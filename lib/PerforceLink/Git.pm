@@ -32,6 +32,7 @@ use constant FILETYPE_ALIASES => {
     "xunicode" => ["unicode", "x"],
     "xutf16" => ["utf16", "x"],
 };
+use constant EMPTY_REF => "0" x 40;
 use base qw(Class::Accessor);
 __PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs mirrorspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts change_charset));
 
@@ -555,6 +556,8 @@ sub update_mirrors {
     my $this = shift;
     my $last_change_id = shift;
     my $update_reason = $last_change_id ? ("from ".$this->p4base." \@$last_change_id") : ("from ".$this->p4base);
+    my @refs_updated;
+
     for (map { $this->match_mirrorspec($_) } @{$this->mirrorspecs}) {
 	my($p4_branch, $git_branch) = @$_;
 	my $p4_tip_commit = $this->get_tip("refs/remotes/".$this->remotename."/$p4_branch");
@@ -564,9 +567,12 @@ sub update_mirrors {
 	}
 	my $git_tip_commit = $this->get_tip("refs/heads/$git_branch");
 	if (!$git_tip_commit) {
-	    printf(" * [new branch]      %-10s -> %-10s\n", $p4_branch, $git_branch);
-	    $this->git_repo->command_noisy("update-ref", "-m", $update_reason, "refs/heads/$git_branch", $p4_tip_commit);
-	    $this->git_repo->command_noisy("config", "branch.$git_branch.p4-remote", $this->remotename);
+	    if ($this->run_git_hook("update", undef, "refs/heads/$git_branch", EMPTY_REF, $p4_tip_commit)) {
+		printf(" * [new branch]      %-10s -> %-10s\n", $p4_branch, $git_branch);
+		$this->git_repo->command_noisy("update-ref", "-m", $update_reason, "refs/heads/$git_branch", $p4_tip_commit);
+		$this->git_repo->command_noisy("config", "branch.$git_branch.p4-remote", $this->remotename);
+		push @refs_updated, [EMPTY_REF, $p4_tip_commit, "refs/heads/$git_branch"];
+	    }
 	}
 	elsif ($git_tip_commit eq $p4_tip_commit) {
 	    printf(" = [up to date]      %-10s -> %-10s\n", $p4_branch, $git_branch);
@@ -574,14 +580,24 @@ sub update_mirrors {
 	else {
 	    my $fast_forward = grep { $_ eq "-$git_tip_commit" } $this->git_repo->command("rev-list", "--boundary", $p4_tip_commit, "--not", $git_tip_commit);
 	    if ($fast_forward) {
-		printf("   %s..%s  %-10s -> %-10s\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
-		$this->git_repo->command_noisy("update-ref", "-m", "$update_reason (fast forward)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
+		if ($this->run_git_hook("update", undef, "refs/heads/$git_branch", $git_tip_commit, $p4_tip_commit)) {
+		    $this->git_repo->command_noisy("update-ref", "-m", "$update_reason (fast forward)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
+		    printf("   %s..%s  %-10s -> %-10s\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
+		    push @refs_updated, [$git_tip_commit, $p4_tip_commit, "refs/heads/$git_branch"];
+		}
 	    }
 	    else {
-		printf(" + %s..%s  %-10s -> %-10s (forced update)\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
-		$this->git_repo->command_noisy("update-ref", "-m", "$update_reason (forced update)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
+		if ($this->run_git_hook("update", undef, "refs/heads/$git_branch", $git_tip_commit, $p4_tip_commit)) {
+		    $this->git_repo->command_noisy("update-ref", "-m", "$update_reason (forced update)", "refs/heads/$git_branch", $p4_tip_commit, $git_tip_commit);
+		    printf(" + %s..%s  %-10s -> %-10s (forced update)\n", substr($git_tip_commit, 0, 7), substr($p4_tip_commit, 0, 7), $p4_branch, $git_branch);
+		    push @refs_updated, [$git_tip_commit, $p4_tip_commit, "refs/heads/$git_branch"];
+		}
 	    }
 	}
+    }
+
+    if (@refs_updated) {
+	$this->run_git_hook("post-receive", join("", map { "$_\n" } map { join(" ", @$_) } @refs_updated));
     }
 }
 
@@ -624,6 +640,36 @@ sub patsubst {
 
     $output_string = eval "qq{$output_string}";
     return $output_string;
+}
+
+sub run_git_hook {
+    my $this = shift;
+    my $hook = shift;
+    my $hook_input = shift;
+
+    my $hook_exec = $this->git_repo->repo_path."/hooks/$hook";
+    return "fast-ok" unless (-x $hook_exec);
+
+    my $hook_pipe = $hook_input && IO::Pipe->new;
+    my $hook_pid = fork;
+    die "Cannot fork for $hook hook: $!\n" unless defined($hook_pid);
+    if ($hook_pid == 0) {
+	if ($hook_pipe) {
+	    $hook_pipe->reader;
+	    open(STDIN, "<&=".$hook_pipe->fileno) or die "Cannot redirect stdin for $hook hook: $!\n";
+	}
+	exec $hook_exec, @_ or die "Cannot exec $hook hook: $hook_exec: $!\n";
+    }
+
+    if ($hook_pipe) {
+	$hook_pipe->writer;
+	$hook_pipe->print($hook_input);
+	$hook_pipe->close;
+    }
+
+    waitpid($hook_pid, 0);
+    my $hook_status = $?;
+    return $hook_status == 0;
 }
 
 1;
