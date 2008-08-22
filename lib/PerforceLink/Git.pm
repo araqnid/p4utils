@@ -34,7 +34,7 @@ use constant FILETYPE_ALIASES => {
 };
 use constant EMPTY_REF => "0" x 40;
 use base qw(Class::Accessor);
-__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs mirrorspecs remotename debug max_changes fast_scan tag_changelists output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts change_charset));
+__PACKAGE__->mk_accessors(qw(git_repo p4base branchspecs mirrorspecs remotename debug max_changes fast_scan tag_changelists tag_branch_roots output_file checkpoint_commits checkpoint_interval checkpoint_bytes grafts change_charset));
 
 sub new {
     my $pkg = shift;
@@ -260,9 +260,11 @@ sub fetch_p4_changes {
 
 	    if (!$current_branch || $branch ne $current_branch) {
 		if ($new_branch) {
-		    print "reset refs/tags/".$this->remotename."/$new_branch/root\n";
-		    print "from :$p4change->{id}\n";
-		    print "\n";
+		    if ($this->tag_branch_roots) {
+			print "reset refs/tags/".$this->remotename."/$new_branch/root\n";
+			print "from :$p4change->{id}\n";
+			print "\n";
+		    }
 		    undef $new_branch;
 		}
 
@@ -374,7 +376,7 @@ sub fetch_p4_changes {
 	    }
 	}
 
-	if ($new_branch) {
+	if ($new_branch && $this->tag_branch_roots) {
 	    print "reset refs/tags/".$this->remotename."/$new_branch/root\n";
 	    print "from :$p4change->{id}\n";
 	    print "\n";
@@ -462,6 +464,18 @@ sub remote_config_bool {
     }
 }
 
+sub remote_config_optional_bool {
+    my $this = shift;
+    my $key = shift;
+    if (@_) {
+	$this->remote_config($key, $_[0] ? "true" : "false");
+    }
+    else {
+	my $value = $this->get_remote_config_optional($key);
+	return defined $value ? $value eq 'true' : undef;
+    }
+}
+
 sub get_remote_config_optional {
     my $this = shift;
     my $key = shift;
@@ -507,6 +521,7 @@ sub save_config {
     return unless ($this->git_repo);
     $this->remote_config('base', $this->p4base);
     $this->remote_config_bool('tag-changelists', $this->tag_changelists);
+    $this->remote_config_bool('tag-branch-roots', $this->tag_branch_roots);
     $this->remote_config_bool('fast-scan', $this->fast_scan);
     for my $envvar (qw|P4PORT P4USER P4CLIENT|) {
 	$this->remote_config(lc($envvar), $ENV{$envvar}) if ($ENV{$envvar});
@@ -521,6 +536,7 @@ sub load_config {
     return unless ($this->git_repo);
     $this->p4base($this->remote_config('base'));
     $this->tag_changelists($this->remote_config_bool('tag-changelists'));
+    $this->tag_branch_roots($this->remote_config_optional_bool('tag-branch-roots'));
     $this->fast_scan($this->remote_config_bool('fast-scan'));
     for my $envvar (qw|P4PORT P4USER P4CLIENT|) {
 	my $value = $this->get_remote_config_optional(lc($envvar));
