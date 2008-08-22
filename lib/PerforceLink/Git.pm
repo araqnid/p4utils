@@ -674,6 +674,7 @@ sub run_git_hook {
 	    $hook_pipe->reader;
 	    open(STDIN, "<&=".$hook_pipe->fileno) or die "Cannot redirect stdin for $hook hook: $!\n";
 	}
+	$ENV{GIT_DIR} = $this->git_repo->repo_path;
 	exec $hook_exec, @_ or die "Cannot exec $hook hook: $hook_exec: $!\n";
     }
 
