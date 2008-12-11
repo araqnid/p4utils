@@ -213,7 +213,7 @@ sub fetch_p4_changes {
 	}
     }
 
-    my $locktarget = $this->git_repo->repo_path."/p4-git-xfer.".$this->remotename;
+    my $locktarget;
     if ($this->output_file) {
 	if ($this->output_file ne '-') {
 	    open(OUTPUT, ">".$this->output_file) or die "Unable to write ".$this->output_file.": $!\n";
@@ -221,6 +221,7 @@ sub fetch_p4_changes {
 	}
     }
     else {
+	$locktarget = $this->git_repo->repo_path."/p4-git-xfer.".$this->remotename;
 	croak "Must have a repository or an output file" unless ($this->git_repo);
 	lock($locktarget) or die "Can't obtain lock on $locktarget\n";
 	my @cmd = ("fast-import");
