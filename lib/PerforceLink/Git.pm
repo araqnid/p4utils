@@ -260,15 +260,6 @@ sub fetch_p4_changes {
 	    print "# $action $file#$rev (-> $branch)\n";
 
 	    if (!$current_branch || $branch ne $current_branch) {
-		if ($new_branch) {
-		    if ($this->tag_branch_roots) {
-			print "reset refs/tags/".$this->remotename."/$new_branch/root\n";
-			print "from :$p4change->{id}\n";
-			print "\n";
-		    }
-		    undef $new_branch;
-		}
-
 		print "commit refs/remotes/".$this->remotename."/$branch\n";
 		print "mark :$p4change->{id}\n";
 		print "committer $p4change->{user}->{FullName} <$p4change->{user}->{Email}> $p4change->{time} +0000\n";
